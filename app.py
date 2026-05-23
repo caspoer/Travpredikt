@@ -455,36 +455,53 @@ def api_race(race_id):
 @app.route("/api/predict", methods=["POST"])
 def api_predict():
     """
-    Ranger et felt av hester.
+    Ranger et felt av hester med 9 vektede komponenter.
 
     Body:
-      horses:  ["Hest A", "Hest B", ...]
-      jockeys: {"Hest A": "Kusk X", ...}     – valgfritt
-      odds:    {"Hest A": 3.45, ...}         – valgfritt (pre-race vinnerodds)
-      race_id: "atg_2026-05-24_17_1"         – valgfritt (lagrer prediksjon)
+      horses:          ["Hest A", "Hest B", ...]
+      jockeys:         {"Hest A": "Kusk X", ...}        – valgfritt
+      odds:            {"Hest A": 3.45, ...}            – valgfritt (pre-race odds)
+      start_positions: {"Hest A": 4, ...}               – valgfritt (startnummer)
+      extra_distances: {"Hest A": 20, ...}              – valgfritt (handicap-meter)
+      trainers:        {"Hest A": "Trener Y", ...}      – valgfritt
+      race_id:         "atg_2026-05-24_17_1"            – valgfritt (auto-fyller + lagrer)
 
-    Hvis race_id er gitt og det er et ATG-løp, henter vi automatisk
-    pre-race odds fra databasen.
+    Hvis race_id er gitt, henter vi automatisk odds, start_positions,
+    extra_distances og trainers fra databasen (results-tabellen).
     """
-    body    = request.get_json(force=True)
-    horses  = body.get("horses", [])
-    jockeys = body.get("jockeys", {})
-    odds    = body.get("odds", {})
-    race_id = body.get("race_id")
+    body            = request.get_json(force=True)
+    horses          = body.get("horses", [])
+    jockeys         = body.get("jockeys", {})
+    odds            = body.get("odds", {})
+    start_positions = body.get("start_positions", {})
+    extra_distances = body.get("extra_distances", {})
+    trainers        = body.get("trainers", {})
+    race_id         = body.get("race_id")
 
     if not horses:
         return jsonify({"error": "Tom hesteliste"}), 400
 
-    # Auto-fyll odds fra databasen hvis race_id er gitt og odds mangler
-    if race_id and not odds:
+    # Auto-fyll fra databasen når race_id er gitt og verdier mangler
+    if race_id:
         with get_conn() as conn:
             rows = conn.execute("""
-                SELECT horse_name, odds FROM results
-                WHERE race_id = ? AND odds IS NOT NULL
+                SELECT horse_name, odds, start_pos, extra_distance, trainer
+                FROM results WHERE race_id = ?
             """, (race_id,)).fetchall()
-        odds = {r["horse_name"]: r["odds"] for r in rows}
+        for r in rows:
+            n = r["horse_name"]
+            if n not in odds            and r["odds"]:            odds[n]            = r["odds"]
+            if n not in start_positions and r["start_pos"]:       start_positions[n] = r["start_pos"]
+            if n not in extra_distances and r["extra_distance"] is not None:
+                extra_distances[n] = r["extra_distance"]
+            if n not in trainers        and r["trainer"]:         trainers[n]        = r["trainer"]
 
-    ranked = ml_model.predict_field(horses, jockeys, odds)
+    ranked = ml_model.predict_field(
+        horses, jockeys, odds,
+        start_positions=start_positions,
+        extra_distances=extra_distances,
+        trainers=trainers,
+    )
     if race_id:
         predictor.save_predictions(race_id, ranked)
     return jsonify(ranked)

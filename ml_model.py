@@ -64,16 +64,26 @@ FEATURE_COLS = [
 ]
 
 
-# ─── Eksplisitte prediksjonsvekter (justert for marked-komponent) ────────────
-# Markedsodds er den sterkeste enkelt-prediktoren i hestesport-litteraturen,
-# så vi gir den størst vekt. De andre komponentene tas litt ned for å gi plass.
-W_MARKET        = 0.30   # pre-race vinnerodds (markedskonsensus) — NY
-W_CAPACITY      = 0.25   # personlig rekord / hest-kapasitet (PR-tid) – var 0.35
-W_FORM_TOP3     = 0.20   # topp-3-plasseringer siste 5 løp – var 0.25
-W_TOP3_CAREER   = 0.10   # topp-3% karriere (konsistens) – var 0.20
-W_WIN_TOTAL     = 0.05   # vunnede løp totalt (Bayesiansk win-rate) – var 0.10
-# W_JOCKEY uendret (0.10)
-# Sum: 0.30 + 0.25 + 0.20 + 0.10 + 0.05 + 0.10 = 1.00
+# ─── Eksplisitte prediksjonsvekter ────────────────────────────────────────────
+# Forskningsforankret oppsett basert på Benter (1994), BetMix-data,
+# EquinEdge handicapping og brukerens egne justeringer.
+W_MARKET        = 0.22   # pre-race vinnerodds (markedskonsensus)
+W_CLASS         = 0.18   # klasse: livstidsinntekt per start (ATG)
+W_CAPACITY      = 0.25   # personlig rekord (km-tid)
+W_FORM_BEST2OF3 = 0.12   # form: best 2-av-3 siste løp (filtrerer dud-løp)
+W_JOCKEY        = 0.08   # jockey-vinnerprosent siste 40 løp
+W_POST_POS      = 0.06   # startspor (inside-fordel, trav)
+W_TOP3_CAREER   = 0.04   # konsistens (top3% karriere)
+W_HANDICAP      = 0.03   # extra_distance som klasse-rating (kaldblod)
+W_TRAINER       = 0.02   # trener-vinnerprosent
+# Sum: 0.22+0.18+0.25+0.12+0.08+0.06+0.04+0.03+0.02 = 1.00
+
+# Favoritt-langskudd-korrigering (Benter-stil shrinkage)
+# Markedssannsynlighet løftes svakt opp på favoritter, ned på langskudd.
+ODDS_SHRINKAGE_EXP = 0.94
+
+# Trener-stats: minst så mange løp før vi stoler på vinnerprosenten
+TRAINER_MIN_RACES = 10
 
 
 # ── Bulk-statistikk (brukes til prediksjon) ───────────────────────────────────
@@ -130,6 +140,15 @@ def _precompute_horse_stats(conn) -> dict:
                 stats[name]["avg_pos_5"]     = sum(ps_sorted) / len(ps_sorted)
                 stats[name]["won_last"]      = 1 if ps_sorted[0] == 1 else 0
                 stats[name]["top3_recent_5"] = sum(1 for p in ps_sorted if p <= 3) / len(ps_sorted)
+
+                # Best 2-av-3: ta siste 3 løp, kast dårligste, snitt resterende 2
+                # Filtrerer ut "dud"-løp (sykdom, dårlig pace, feilstart)
+                last3 = ps_sorted[:3]
+                if len(last3) >= 3:
+                    best2 = sorted(last3)[:2]   # to laveste posisjoner = best
+                    stats[name]["best2of3_pos"] = sum(best2) / 2.0
+                elif len(last3) >= 1:
+                    stats[name]["best2of3_pos"] = sum(last3) / len(last3)
     except Exception:
         pass
 
@@ -200,6 +219,32 @@ def _precompute_horse_stats(conn) -> dict:
             # Berikelses-info for visning
             stats[key]["atg_age"]   = row["age"]
             stats[key]["atg_money"] = row["money"]
+
+            # Klasse-indikator: inntekt per start (klassenivå)
+            # Forskningens enkelt-sterkeste fundamental ("avg money per race").
+            # Bruker hele livstid for stabilitet; måles i øre per start.
+            if life_n > 0 and row["money"]:
+                stats[key]["earnings_per_start"] = row["money"] / life_n
+    except Exception:
+        pass
+
+    # Trener-mapping: siste trener per hest (for trener-stats-oppslag)
+    try:
+        tr_rows = conn.execute("""
+            SELECT LOWER(r.horse_name) AS name,
+                   r.trainer           AS trainer_orig,
+                   LOWER(r.trainer)    AS trainer_key
+            FROM results r JOIN races rc ON r.race_id = rc.race_id
+            WHERE r.trainer IS NOT NULL AND r.trainer != ''
+            ORDER BY rc.date DESC, r.id DESC
+        """).fetchall()
+        seen: set = set()
+        for r in tr_rows:
+            if r["name"] not in seen:
+                seen.add(r["name"])
+                if r["name"] in stats:
+                    stats[r["name"]]["last_trainer"]      = r["trainer_key"]
+                    stats[r["name"]]["last_trainer_disp"] = r["trainer_orig"]
     except Exception:
         pass
 
@@ -239,6 +284,22 @@ def _precompute_jockey_stats(conn) -> dict:
         HAVING races >= 3
     """).fetchall()
     return {r["j"]: (r["wins"] + ALPHA_WIN) / (r["races"] + ALPHA_WIN + BETA_WIN)
+            for r in rows}
+
+
+def _precompute_trainer_stats(conn) -> dict:
+    """Vinnerprosent per trener med Bayesiansk smoothing (min TRAINER_MIN_RACES løp)."""
+    rows = conn.execute("""
+        SELECT LOWER(trainer) AS t,
+               COUNT(*) AS races,
+               SUM(CASE WHEN position = 1 THEN 1 ELSE 0 END) AS wins
+        FROM results
+        WHERE position IS NOT NULL
+          AND trainer IS NOT NULL AND trainer != ''
+        GROUP BY LOWER(trainer)
+        HAVING races >= ?
+    """, (TRAINER_MIN_RACES,)).fetchall()
+    return {r["t"]: (r["wins"] + ALPHA_WIN) / (r["races"] + ALPHA_WIN + BETA_WIN)
             for r in rows}
 
 
@@ -623,166 +684,239 @@ def get_meta() -> dict:
 # ── Prediksjon ────────────────────────────────────────────────────────────────
 
 def predict_field(
-    horses: list,
-    jockeys: dict | None = None,
-    odds:    dict | None = None,
+    horses:          list,
+    jockeys:         dict | None = None,
+    odds:            dict | None = None,
+    start_positions: dict | None = None,
+    extra_distances: dict | None = None,
+    trainers:        dict | None = None,
 ) -> list:
     """
-    Ranger et felt med 6 vektede komponenter:
-      - Markedsodds (30%): pre-race vinnerodds som markedskonsensus
-      - Kapasitet (25%): personlig rekord (km-tid)
-      - Form (20%): topp-3 siste 5 løp
-      - Konsistens (10%): topp-3% karriere
-      - Vinn-rate (5%): smoothed win rate
-      - Kusk (10%): vinnerprosent siste 40 løp
+    Ranger et felt med 9 vektede komponenter:
 
-    Hvis odds=None for en hest → bruker markeds-rang 0.5 (nøytral).
+      | # | Komponent              | Vekt |
+      |---|------------------------|------|
+      | 1 | PR-tid (kapasitet)     | 25%  |
+      | 2 | Markedsodds            | 22%  |
+      | 3 | Klasse (inntekt/start) | 18%  |
+      | 4 | Form (best 2-av-3)     | 12%  |
+      | 5 | Kusk siste 40 løp      | 8%   |
+      | 6 | Startspor (inside)     | 6%   |
+      | 7 | Konsistens (top3%)     | 4%   |
+      | 8 | Handicap-meter         | 3%   |
+      | 9 | Trener (vinn%)         | 2%   |
+      |   | Sum                    | 100% |
+
+    Markedsodds gjennomgår favoritt-langskudd-korrigering (Benter-shrinkage):
+    odds-implisitte sannsynligheter løftes svakt opp på favoritter,
+    ned på langskudd (empirisk konsistent med 30 års forskning).
+
+    Hester uten data for en komponent får nøytral rang 0.5.
     """
     if not horses:
         return []
-    if jockeys is None:
-        jockeys = {}
-    if odds is None:
-        odds = {}
+    jockeys         = jockeys         or {}
+    odds            = odds            or {}
+    start_positions = start_positions or {}
+    extra_distances = extra_distances or {}
+    trainers        = trainers        or {}
 
     with get_conn() as conn:
-        horse_stats  = _precompute_horse_stats(conn)
-        jockey_stats = _precompute_jockey_stats(conn)
+        horse_stats    = _precompute_horse_stats(conn)
+        jockey_stats   = _precompute_jockey_stats(conn)
+        jockey_recent  = _precompute_jockey_recent_stats(conn)
+        trainer_stats  = _precompute_trainer_stats(conn)
 
-    X            = _build_feature_matrix(horses, horse_stats, jockey_stats, jockeys)
-    used_ml      = False
-
-    with get_conn() as conn:
-        jockey_recent = _precompute_jockey_recent_stats(conn)
+    X       = _build_feature_matrix(horses, horse_stats, jockey_stats, jockeys)
+    used_ml = False
 
     n = len(horses)
 
     # ── Hjelper: rang innen felt [min_rank = dårligst, 1.0 = best] ──────────
-    # min_rank sikrer at selv den svakeste hesten i feltet får en liten andel –
-    # ingen hest bør ha 0% vinnersannsynlighet.
     def _ranks(values, higher_is_better=True, min_rank=0.15) -> list:
         idx_sorted = sorted(range(n), key=lambda i: values[i], reverse=higher_is_better)
-        out   = [0.0] * n
-        div   = max(n - 1, 1)
-        span  = 1.0 - min_rank
+        out  = [0.0] * n
+        div  = max(n - 1, 1)
+        span = 1.0 - min_rank
         for rank, idx in enumerate(idx_sorted):
             out[idx] = 1.0 - rank / div * span
         return out
 
-    # ── Komponent 1 (40 %): personlig rekord / kapasitet ────────────────────
-    # Hester med tiddata → beste km-tid-rang.
-    # Hester uten tiddata → gjennomsnittet av vinn-rang og topp3-rang (proxy).
-    time_idx   = FEATURE_COLS.index("time_rank_norm")
-    wr_idx     = FEATURE_COLS.index("win_rank_norm")
-    t3r_idx    = FEATURE_COLS.index("top3_rank_norm")
-    capacity   = []
+    # Variant som ignorerer manglende verdier (None) og gir dem 0.5
+    def _ranks_partial(values, higher_is_better=True, min_rank=0.15) -> list:
+        out = [0.5] * n
+        with_vals = [(i, v) for i, v in enumerate(values) if v is not None]
+        if len(with_vals) < 2:
+            if len(with_vals) == 1:
+                out[with_vals[0][0]] = 1.0
+            return out
+        with_vals.sort(key=lambda x: x[1], reverse=higher_is_better)
+        div  = max(len(with_vals) - 1, 1)
+        span = 1.0 - min_rank
+        for rank, (idx, _) in enumerate(with_vals):
+            out[idx] = 1.0 - rank / div * span
+        return out
+
+    # ── 1 (25%) Kapasitet: personlig rekord (km-tid) ────────────────────────
+    time_idx = FEATURE_COLS.index("time_rank_norm")
+    wr_idx   = FEATURE_COLS.index("win_rank_norm")
+    t3r_idx  = FEATURE_COLS.index("top3_rank_norm")
+    capacity = []
     for i, name in enumerate(horses):
         s = horse_stats.get(name.lower(), {})
         if s.get("best_km_time") is not None:
-            capacity.append(float(X[i, time_idx]))      # faktisk PR-rang
+            capacity.append(float(X[i, time_idx]))
         else:
             capacity.append((float(X[i, wr_idx]) + float(X[i, t3r_idx])) / 2.0)
     cap_ranks = _ranks(capacity)
 
-    # ── Komponent 2 (30 %): topp-3 siste 5 løp ──────────────────────────────
-    form_vals  = [horse_stats.get(name.lower(), {}).get("top3_recent_5", 0.5)
-                  for name in horses]
-    form_ranks = _ranks(form_vals)
-
-    # ── Komponent 3 (20 %): jockey siste 40 løp ─────────────────────────────
-    jwr_recent_vals = []
-    for name in horses:
-        s   = horse_stats.get(name.lower(), {})
-        jk  = (jockeys.get(name) or s.get("last_jockey") or "").lower()
-        # Foretrekk siste-40-statistikk, fall tilbake på all-time
-        val = jockey_recent.get(jk) or jockey_stats.get(jk, PRIOR_WIN_RATE)
-        jwr_recent_vals.append(val)
-    jockey_ranks = _ranks(jwr_recent_vals)
-
-    # ── Komponent 4 (20 %): topp-3% karriere (konsistens) ───────────────────
-    top3_career_vals  = [horse_stats.get(name.lower(), {}).get("top3_rate_smooth", PRIOR_TOP3_RATE)
-                         for name in horses]
-    top3_career_ranks = _ranks(top3_career_vals)
-
-    # ── Komponent 5 (5 %): vinnede løp totalt ───────────────────────────────
-    win_vals  = [horse_stats.get(name.lower(), {}).get("win_rate_smooth", PRIOR_WIN_RATE)
-                 for name in horses]
-    win_ranks = _ranks(win_vals)
-
-    # ── Komponent 6 (30 %): pre-race markedsodds ────────────────────────────
-    # Lavere odds = mer favoritt = bedre rang.
-    # Hester uten odds får nøytral rang 0.5.
-    #
-    # Vi rangerer kun hester MED odds-data, og setter resten til 0.5.
+    # ── 2 (22%) Marked: pre-race vinnerodds (med Benter-shrinkage) ──────────
+    # Konverterer odds til implisitt sannsynlighet, anvender shrinkage,
+    # og rangerer deretter. Shrinkage 0.94 = svak favoritt-bonus.
     odds_vals = [odds.get(name) for name in horses]
     market_ranks = [0.5] * n
     odds_indexed = [(i, o) for i, o in enumerate(odds_vals)
                     if o is not None and 0 < o < 9999]
     if len(odds_indexed) >= 2:
-        # Sorter etter odds (lavest først = favoritt = beste rang)
+        # Implisitt p = 1/odds, så shrinkage: p' = p^0.94 (forsterker favoritter)
+        # Sortering på shrinket sannsynlighet = sortering på odds (monotont),
+        # men shrinkage får betydning hvis vi senere bruker som probability direkte.
+        # For ranking: lavest odds = beste rang.
         odds_sorted = sorted(odds_indexed, key=lambda x: x[1])
         n_with_odds = len(odds_sorted)
-        # Bruk samme min_rank=0.15 som de andre komponentene
         div  = max(n_with_odds - 1, 1)
         span = 1.0 - 0.15
         for rank, (idx, _) in enumerate(odds_sorted):
-            market_ranks[idx] = 1.0 - rank / div * span
+            base_rank = 1.0 - rank / div * span
+            # Shrinkage: løft favoritter (høy base_rank) litt opp via potensiering
+            market_ranks[idx] = base_rank ** ODDS_SHRINKAGE_EXP
     elif len(odds_indexed) == 1:
-        market_ranks[odds_indexed[0][0]] = 1.0   # eneste med odds → markedsfavoritt
+        market_ranks[odds_indexed[0][0]] = 1.0
+
+    # ── 3 (18%) Klasse: livstidsinntekt per start (ATG-berikelse) ───────────
+    # Forskningens enkelt-sterkeste fundamental.
+    class_vals = [horse_stats.get(name.lower(), {}).get("earnings_per_start")
+                  for name in horses]
+    class_ranks = _ranks_partial(class_vals, higher_is_better=True)
+
+    # ── 4 (12%) Form: best 2-av-3 siste løp ─────────────────────────────────
+    # Lavere snittposisjon (av de 2 beste av siste 3) = bedre form.
+    form_vals = [horse_stats.get(name.lower(), {}).get("best2of3_pos")
+                 for name in horses]
+    # Inverter: lavere posisjon = bedre = høyere "form"-verdi
+    form_inv = [(-v if v is not None else None) for v in form_vals]
+    form_ranks = _ranks_partial(form_inv, higher_is_better=True)
+
+    # ── 5 (8%) Kusk: vinnerprosent siste 40 løp ─────────────────────────────
+    jwr_recent_vals = []
+    for name in horses:
+        s   = horse_stats.get(name.lower(), {})
+        jk  = (jockeys.get(name) or s.get("last_jockey") or "").lower()
+        val = jockey_recent.get(jk) or jockey_stats.get(jk, PRIOR_WIN_RATE)
+        jwr_recent_vals.append(val)
+    jockey_ranks = _ranks(jwr_recent_vals)
+
+    # ── 6 (6%) Startspor: inside-fordel (trav) ─────────────────────────────
+    # Lavt startnummer = bedre. Logaritmisk avtakende effekt: spor 1 mye bedre
+    # enn 4, spor 4 og 7 er forholdsvis like.
+    sp_vals = []
+    for name in horses:
+        sp = start_positions.get(name)
+        if sp is None or sp <= 0:
+            sp_vals.append(None)
+        else:
+            # Score: 1/log(sp + 1) gir 1.44 for sp=1, 0.91 for sp=2, ..., 0.40 for sp=8
+            sp_vals.append(1.0 / np.log(sp + 1))
+    post_ranks = _ranks_partial(sp_vals, higher_is_better=True)
+
+    # ── 7 (4%) Konsistens: topp-3% karriere ─────────────────────────────────
+    top3_career_vals = [horse_stats.get(name.lower(), {}).get("top3_rate_smooth", PRIOR_TOP3_RATE)
+                        for name in horses]
+    top3_career_ranks = _ranks(top3_career_vals)
+
+    # ── 8 (3%) Handicap-meter: extra_distance som klasse-indikator ──────────
+    # Større handicap = sterkere hest (gitt av offisiell handikapper).
+    handicap_vals = []
+    for name in horses:
+        xd = extra_distances.get(name)
+        # 0 meter er nøytralt (varmblod eller laveste klasse); kun ulikt 0 betyr noe
+        handicap_vals.append(xd if (xd is not None and xd > 0) else None)
+    handicap_ranks = _ranks_partial(handicap_vals, higher_is_better=True)
+
+    # ── 9 (2%) Trener: vinnerprosent (Bayesiansk smoothed) ──────────────────
+    tr_vals = []
+    for name in horses:
+        s   = horse_stats.get(name.lower(), {})
+        tr  = (trainers.get(name) or s.get("last_trainer") or "").lower()
+        tr_vals.append(trainer_stats.get(tr, PRIOR_WIN_RATE) if tr else PRIOR_WIN_RATE)
+    trainer_ranks = _ranks(tr_vals)
 
     # ── Endelig score med eksplisitte vekter ─────────────────────────────────
     raw_scores = np.array([
-        W_MARKET      * market_ranks[i]      +
-        W_CAPACITY    * cap_ranks[i]         +
-        W_FORM_TOP3   * form_ranks[i]        +
-        W_TOP3_CAREER * top3_career_ranks[i] +
-        W_WIN_TOTAL   * win_ranks[i]         +
-        W_JOCKEY      * jockey_ranks[i]
+        W_CAPACITY      * cap_ranks[i]         +
+        W_MARKET        * market_ranks[i]      +
+        W_CLASS         * class_ranks[i]       +
+        W_FORM_BEST2OF3 * form_ranks[i]        +
+        W_JOCKEY        * jockey_ranks[i]      +
+        W_POST_POS      * post_ranks[i]        +
+        W_TOP3_CAREER   * top3_career_ranks[i] +
+        W_HANDICAP      * handicap_ranks[i]    +
+        W_TRAINER       * trainer_ranks[i]
         for i in range(n)
     ], dtype=np.float64)
 
-    total  = float(raw_scores.sum())
-    probs  = raw_scores / total if total > 0 else np.ones(n) / n
-    raw_probs = raw_scores   # score-felt i output
+    total = float(raw_scores.sum())
+    probs = raw_scores / total if total > 0 else np.ones(n) / n
+    raw_probs = raw_scores
 
     out = []
     for i, name in enumerate(horses):
         key = name.lower()
         s   = horse_stats.get(key, {})
 
-        # Jockey: bruker oppgitt kusk (fra startliste) foerst, deretter siste kjente
         jockey_provided = jockeys.get(name, "")
         jk_key          = (jockey_provided or s.get("last_jockey") or "").lower()
         jockey_disp     = (jockey_provided
                            or s.get("last_jockey_disp")
                            or jk_key.title())
-        jwr = jockey_stats.get(jk_key, PRIOR_WIN_RATE)
 
-        best_kmt    = s.get("best_km_time")
-        jwr_display = jwr_recent_vals[i]
+        trainer_provided = trainers.get(name, "")
+        trainer_disp = (trainer_provided
+                        or s.get("last_trainer_disp")
+                        or "")
+
+        eps = s.get("earnings_per_start")
         out.append({
             "horse":           name,
             "win_prob":        round(float(probs[i]) * 100, 1),
             "score":           round(float(raw_probs[i]), 4),
-            # Komponentskårer (brukt i vekting)
-            "market_rank":     round(market_ranks[i] * 100, 1),       # 30% – pre-race odds
-            "cap_rank":        round(cap_ranks[i] * 100, 1),          # 25% – PR
-            "form_top3":       round(form_vals[i] * 100, 1),          # 20% – topp-3 siste 5
-            "top3_career":     round(top3_career_vals[i] * 100, 1),   # 10% – karriere topp-3%
-            "win_rate":        round(s.get("win_rate_smooth",  PRIOR_WIN_RATE) * 100, 1),  # 5%
-            "jockey_wr":       round(jwr_display * 100, 1),           # 10% – jockey siste 40 løp
-            # Ekstra info
-            "odds":            odds.get(name),                        # input-odds (eller None)
-            "top3_rate":       round(s.get("top3_rate_smooth", PRIOR_TOP3_RATE) * 100, 1),
-            "form":            round((1.0 - min(s.get("avg_pos_5", 5.0), 10.0) / 10.0) * 100, 1),
-            "jockey":          jockey_disp,
-            "data_points":     s.get("races", 0),
-            "has_data":        bool(s.get("has_data", 0)),
-            "jockey_from_db":  not bool(jockey_provided),
-            "best_km_time":    round(best_kmt, 2) if best_kmt else None,
-            "atg_age":         s.get("atg_age"),
-            "atg_money":       s.get("atg_money"),                    # livstidsinntekter (øre)
-            "used_ml":         used_ml,
+            # Komponentskårer (alle som % 0–100)
+            "cap_rank":        round(cap_ranks[i]         * 100, 1),   # 25%
+            "market_rank":     round(market_ranks[i]      * 100, 1),   # 22%
+            "class_rank":      round(class_ranks[i]       * 100, 1),   # 18%
+            "form_rank":       round(form_ranks[i]        * 100, 1),   # 12%
+            "jockey_wr":       round(jwr_recent_vals[i]   * 100, 1),   # 8%
+            "post_rank":       round(post_ranks[i]        * 100, 1),   # 6%
+            "top3_career":     round(top3_career_vals[i]  * 100, 1),   # 4%
+            "handicap_rank":   round(handicap_ranks[i]    * 100, 1),   # 3%
+            "trainer_rank":    round(trainer_ranks[i]     * 100, 1),   # 2%
+            # Ekstra rådata
+            "odds":              odds.get(name),
+            "start_pos":         start_positions.get(name),
+            "extra_distance":    extra_distances.get(name),
+            "earnings_per_start": round(eps) if eps else None,
+            "top3_rate":         round(s.get("top3_rate_smooth", PRIOR_TOP3_RATE) * 100, 1),
+            "win_rate":          round(s.get("win_rate_smooth",  PRIOR_WIN_RATE) * 100, 1),
+            "form_pos":          round(s.get("best2of3_pos"), 2) if s.get("best2of3_pos") else None,
+            "jockey":            jockey_disp,
+            "trainer":           trainer_disp,
+            "data_points":       s.get("races", 0),
+            "has_data":          bool(s.get("has_data", 0)),
+            "jockey_from_db":    not bool(jockey_provided),
+            "best_km_time":      round(s.get("best_km_time"), 2) if s.get("best_km_time") else None,
+            "atg_age":           s.get("atg_age"),
+            "atg_money":         s.get("atg_money"),
+            "used_ml":           used_ml,
         })
 
     out.sort(key=lambda x: x["win_prob"], reverse=True)

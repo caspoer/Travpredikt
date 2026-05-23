@@ -1155,29 +1155,41 @@ async function runPredictWithHorses(horses, bloodType, jockeys = {}) {
                  style="width:${h.win_prob}%;${!first ? `background:${accentColor}` : ''}"></div>
           </div>
           <div style="display:flex;gap:14px;margin-top:8px;font-size:.78rem;color:var(--muted);flex-wrap:wrap">
-            <span title="30% vekt – pre-race markedsodds (markedskonsensus)">
-              💰 Marked: <strong style="color:var(--text)">${h.odds ? h.odds.toFixed(2)+'x' : '–'}</strong>
-              <span style="font-size:.7rem;opacity:.6">(30%)</span>
-            </span>
-            <span title="25% vekt – personlig rekord / hest-kapasitet">
+            <span title="25% vekt – personlig rekord (km-tid)">
               ⏱ PR: <strong style="color:var(--text)">${h.best_km_time ? fmtKmTime(h.best_km_time)+'/km' : '–'}</strong>
               <span style="font-size:.7rem;opacity:.6">(25%)</span>
             </span>
-            <span title="20% vekt – topp-3 siste 5 løp (form)">
-              📈 Form: <strong style="color:var(--text)">${h.form_top3}%</strong>
-              <span style="font-size:.7rem;opacity:.6">(20%)</span>
+            <span title="22% vekt – pre-race markedsodds (med Benter-shrinkage)">
+              💰 Marked: <strong style="color:var(--text)">${h.odds ? h.odds.toFixed(2)+'x' : '–'}</strong>
+              <span style="font-size:.7rem;opacity:.6">(22%)</span>
             </span>
-            <span title="10% vekt – topp-3% karriere (konsistens)">
-              🎯 Konsistens: <strong style="color:var(--text)">${h.top3_career}%</strong>
-              <span style="font-size:.7rem;opacity:.6">(10%)</span>
+            <span title="18% vekt – livstidsinntekt per start (ATG-klasse)">
+              🚀 Klasse: <strong style="color:var(--text)">${h.earnings_per_start ? Math.round(h.earnings_per_start/100).toLocaleString('nb-NO')+' kr/start' : '–'}</strong>
+              <span style="font-size:.7rem;opacity:.6">(18%)</span>
             </span>
-            <span title="5% vekt – vinnede løp totalt">
-              🏆 Vinn%: <strong style="color:var(--text)">${h.win_rate}%</strong>
-              <span style="font-size:.7rem;opacity:.6">(5%)</span>
+            <span title="12% vekt – form basert på best 2 av siste 3 løp">
+              📈 Form: <strong style="color:var(--text)">${h.form_pos ? h.form_pos.toFixed(1)+'. snitt' : '–'}</strong>
+              <span style="font-size:.7rem;opacity:.6">(12%)</span>
             </span>
-            <span title="10% vekt – jockey siste 40 løp">
+            <span title="8% vekt – jockey siste 40 løp">
               🎽 Kusk: <strong style="color:var(--text)">${h.jockey_wr}%</strong>
-              <span style="font-size:.7rem;opacity:.6">(10%)</span>
+              <span style="font-size:.7rem;opacity:.6">(8%)</span>
+            </span>
+            <span title="6% vekt – startspor (inside-fordel i trav)">
+              🎯 Spor: <strong style="color:var(--text)">${h.start_pos || '–'}</strong>
+              <span style="font-size:.7rem;opacity:.6">(6%)</span>
+            </span>
+            <span title="4% vekt – topp-3% karriere (konsistens)">
+              🏆 Top3-karr: <strong style="color:var(--text)">${h.top3_career}%</strong>
+              <span style="font-size:.7rem;opacity:.6">(4%)</span>
+            </span>
+            <span title="3% vekt – handicap-meter (kaldblod-klasse)">
+              🏋 Hcap: <strong style="color:var(--text)">${h.extra_distance != null ? h.extra_distance+'m' : '–'}</strong>
+              <span style="font-size:.7rem;opacity:.6">(3%)</span>
+            </span>
+            <span title="2% vekt – trener-vinnerprosent">
+              👤 Trener: <strong style="color:var(--text)">${h.trainer_rank}%</strong>
+              <span style="font-size:.7rem;opacity:.6">(2%)</span>
             </span>
           </div>
           ${noDataWarn}
