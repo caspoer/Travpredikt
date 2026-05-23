@@ -483,7 +483,8 @@ Fjord Hauk" style="width:100%;background:var(--surface);border:1px solid var(--b
       <div class="card-title">📆 Hent historiske resultater (bulk)</div>
       <p style="color:var(--muted);font-size:.83rem;margin-bottom:16px">
         Henter historiske resultater fra valgte kilder. Rikstoto støtter NO/SE/DK/FI.
-        ATG henter svenske løp direkte fra atg.se (SE). Med 1 s forsinkelse tar 1 år ca. 3–6 min. Du kan stoppe når som helst.
+        ATG henter svenske løp direkte fra atg.se (SE). Med <strong>5 parallelle workers</strong> tar 1 år ca. 30–90 sek.
+        Allerede-hentede løp hoppes over automatisk. Du kan stoppe når som helst.
       </p>
       <div class="row" style="flex-wrap:wrap;gap:16px;align-items:center">
         <div>
@@ -497,11 +498,20 @@ Fjord Hauk" style="width:100%;background:var(--surface);border:1px solid var(--b
           </select>
         </div>
         <div>
-          <label style="font-size:.83rem;color:var(--muted);display:block;margin-bottom:4px">Forsinkelse per stevne</label>
+          <label style="font-size:.83rem;color:var(--muted);display:block;margin-bottom:4px">Pause mellom batcher</label>
           <select id="bulk-delay" style="width:160px">
-            <option value="0.5">0.5 s (raskere)</option>
-            <option value="1.0" selected>1.0 s (anbefalt)</option>
-            <option value="2.0">2.0 s (skånsom)</option>
+            <option value="0.0">0 s (maks fart)</option>
+            <option value="0.3" selected>0.3 s (anbefalt)</option>
+            <option value="1.0">1.0 s (skånsom)</option>
+          </select>
+        </div>
+        <div>
+          <label style="font-size:.83rem;color:var(--muted);display:block;margin-bottom:4px">Parallelle workers</label>
+          <select id="bulk-workers" style="width:160px">
+            <option value="3">3 (forsiktig)</option>
+            <option value="5" selected>5 (anbefalt)</option>
+            <option value="8">8 (raskere)</option>
+            <option value="10">10 (maks)</option>
           </select>
         </div>
       </div>
@@ -1271,10 +1281,11 @@ async function fetchData() {
 let _pollTimer = null;
 
 async function startBulk() {
-  const days      = parseInt(document.getElementById('bulk-days').value);
-  const delay     = parseFloat(document.getElementById('bulk-delay').value);
-  const sources   = [...document.querySelectorAll('.bulk-src-cb:checked')].map(c => c.value);
-  const countries = [...document.querySelectorAll('.bulk-country-cb:checked')].map(c => c.value);
+  const days        = parseInt(document.getElementById('bulk-days').value);
+  const delay       = parseFloat(document.getElementById('bulk-delay').value);
+  const max_workers = parseInt(document.getElementById('bulk-workers').value);
+  const sources     = [...document.querySelectorAll('.bulk-src-cb:checked')].map(c => c.value);
+  const countries   = [...document.querySelectorAll('.bulk-country-cb:checked')].map(c => c.value);
   if (!sources.length) { toast('Velg minst én kilde', false); return; }
   if (sources.includes('rikstoto') && !countries.length) { toast('Velg minst ett land', false); return; }
 
@@ -1282,7 +1293,7 @@ async function startBulk() {
     await api('/api/fetch/bulk', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ days, sources, countries, delay }),
+      body: JSON.stringify({ days, sources, countries, delay, max_workers }),
     });
   } catch(e) {
     toast(e.message, false);

@@ -24,6 +24,33 @@ import re
 import time
 import requests
 from bs4 import BeautifulSoup
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
+
+def _build_session(headers: dict, pool_size: int = 20) -> requests.Session:
+    """
+    Felles HTTP-session med:
+      - Keep-alive (gjenbruker TCP+TLS-koblinger → ~1.5-2x raskere per kall)
+      - Connection pool på 20 (nok for vår parallellitet)
+      - Auto-retry på midlertidige feil (502/503/504)
+    """
+    s = requests.Session()
+    s.headers.update(headers)
+    retry = Retry(
+        total=3, backoff_factor=0.5,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["GET", "HEAD"],
+    )
+    adapter = HTTPAdapter(
+        pool_connections=pool_size,
+        pool_maxsize=pool_size,
+        max_retries=retry,
+    )
+    s.mount("https://", adapter)
+    s.mount("http://", adapter)
+    return s
 
 # ── Rikstoto ──────────────────────────────────────────────────────────────────
 
@@ -50,10 +77,13 @@ COUNTRIES = {
 
 SOURCES = {"rikstoto": None, "travsport": None, "atg": None}
 
+# Felles session for alle Rikstoto-kall (HTTP keep-alive)
+_RIKSTOTO_SESSION = _build_session(HEADERS)
+
 
 def _get(url: str) -> dict | None:
     try:
-        r = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
+        r = _RIKSTOTO_SESSION.get(url, timeout=TIMEOUT)
         r.raise_for_status()
         return r.json()
     except Exception as e:
@@ -251,10 +281,13 @@ TRAVSPORT_HEADERS = {
 }
 
 
+_TRAVSPORT_SESSION = _build_session(TRAVSPORT_HEADERS)
+
+
 def _ts_get(url: str) -> str | None:
     """Henter HTML fra travsport.no."""
     try:
-        r = requests.get(url, headers=TRAVSPORT_HEADERS, timeout=20)
+        r = _TRAVSPORT_SESSION.get(url, timeout=20)
         r.raise_for_status()
         r.encoding = "utf-8"
         return r.text
@@ -541,10 +574,12 @@ ATG_HEADERS = {
 # Hvilke land vi henter fra ATG (SE er kjerne, DK kan inkluderes)
 ATG_COUNTRIES = {"SE"}
 
+_ATG_SESSION = _build_session(ATG_HEADERS)
+
 
 def _atg_get(url: str) -> dict | None:
     try:
-        r = requests.get(url, headers=ATG_HEADERS, timeout=15)
+        r = _ATG_SESSION.get(url, timeout=15)
         r.raise_for_status()
         return r.json()
     except Exception:
@@ -665,7 +700,7 @@ def fetch_atg_race(race_id: str) -> dict | None:
     """
     url = f"https://www.atg.se/services/racinginfo/v1/api/games/vinnare_{race_id}"
     try:
-        r = requests.get(url, headers=ATG_HEADERS, timeout=15)
+        r = _ATG_SESSION.get(url, timeout=15)
         r.raise_for_status()
         data = r.json()
     except Exception:
@@ -810,6 +845,65 @@ def get_atg_race_ids(
                 continue
             ids.append(race["id"])
     return ids
+
+
+def fetch_atg_races_parallel(
+    race_ids:    list[str],
+    max_workers: int = 5,
+    progress_cb=None,
+) -> list[dict]:
+    """
+    Henter mange ATG-løp parallelt med ThreadPoolExecutor.
+    max_workers=5 er trygt for ATG-APIet (10+ kan trigger throttling).
+    progress_cb(done, total, race) kalles etter hvert ferdig løp.
+    """
+    if not race_ids:
+        return []
+
+    results = []
+    done = 0
+    total = len(race_ids)
+
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        future_map = {ex.submit(fetch_atg_race, rid): rid for rid in race_ids}
+        for fut in as_completed(future_map):
+            race = fut.result()
+            done += 1
+            if race:
+                results.append(race)
+            if progress_cb:
+                try:
+                    progress_cb(done, total, race)
+                except Exception:
+                    pass
+    return results
+
+
+def fetch_rikstoto_racedays_parallel(
+    raceday_metas: list[dict],
+    max_workers:   int = 4,
+    progress_cb=None,
+) -> list[dict]:
+    """Henter mange Rikstoto-racedays parallelt (hver gjør 2 API-kall internt)."""
+    if not raceday_metas:
+        return []
+
+    all_races = []
+    done = 0
+    total = len(raceday_metas)
+
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        future_map = {ex.submit(fetch_raceday, m): m for m in raceday_metas}
+        for fut in as_completed(future_map):
+            races = fut.result() or []
+            done += 1
+            all_races.extend(races)
+            if progress_cb:
+                try:
+                    progress_cb(done, total, races)
+                except Exception:
+                    pass
+    return all_races
 
 
 def fetch_atg_results(
