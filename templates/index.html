@@ -349,7 +349,7 @@ Fjord Hauk" style="width:100%;background:var(--surface);border:1px solid var(--b
 
     <div class="card">
       <div class="card-title">⏭ Kommende ATG-løp</div>
-      <div class="row" style="flex-wrap:wrap;gap:14px;align-items:flex-end;margin-bottom:14px">
+      <div class="row" style="flex-wrap:wrap;gap:14px;align-items:flex-end;margin-bottom:10px">
         <div>
           <label style="font-size:.83rem;color:var(--muted);display:block;margin-bottom:4px">Fra dato</label>
           <input type="date" id="upcoming-from">
@@ -359,6 +359,14 @@ Fjord Hauk" style="width:100%;background:var(--surface);border:1px solid var(--b
           <input type="date" id="upcoming-to">
         </div>
         <button onclick="loadUpcoming()">🔄 Hent og predikter</button>
+      </div>
+      <div style="margin-bottom:14px">
+        <div style="font-size:.83rem;color:var(--muted);margin-bottom:8px">Land:</div>
+        <div class="row" style="flex-wrap:wrap;gap:14px;margin-bottom:0">
+          <label><input type="checkbox" class="upcoming-country-cb" value="NO" checked> 🇳🇴 Norge</label>
+          <label><input type="checkbox" class="upcoming-country-cb" value="SE" checked> 🇸🇪 Sverige</label>
+          <label><input type="checkbox" class="upcoming-country-cb" value="DK"> 🇩🇰 Danmark</label>
+        </div>
       </div>
       <div id="upcoming-status" style="color:var(--muted);font-size:.85rem;margin-bottom:14px"></div>
       <div id="upcoming-body"></div>
@@ -1672,6 +1680,11 @@ async function loadUpcoming() {
   const status = document.getElementById('upcoming-status');
   const from   = document.getElementById('upcoming-from').value;
   const to     = document.getElementById('upcoming-to').value;
+  const countries = [...document.querySelectorAll('.upcoming-country-cb:checked')].map(c => c.value).join(',');
+  if (!countries) {
+    body.innerHTML = '<div style="color:var(--gold);padding:20px">Velg minst ett land.</div>';
+    return;
+  }
   body.innerHTML = '<div class="loader"><div class="spinner"></div><div>Henter løp og predikerer (kan ta 10-30 sek)…</div></div>';
   status.textContent = '';
 
@@ -1680,9 +1693,8 @@ async function loadUpcoming() {
   const timeoutId = setTimeout(() => controller.abort(), 90000);
 
   try {
-    const resp = await fetch(`/api/upcoming?date_from=${from}&date_to=${to}`, {
-      signal: controller.signal,
-    });
+    const url = `/api/upcoming?date_from=${from}&date_to=${to}&countries=${encodeURIComponent(countries)}`;
+    const resp = await fetch(url, { signal: controller.signal });
     clearTimeout(timeoutId);
     if (!resp.ok) {
       const txt = await resp.text();
@@ -1695,15 +1707,23 @@ async function loadUpcoming() {
       return;
     }
     status.innerHTML = `✅ Hentet og predikerte <strong>${r.count}</strong> løp`;
+    // Map kjente norske/danske ATG-baner → flagg (for visuell sortering)
+    const NO_TRACKS = ['Jarlsberg','Bjerke','Forus','Sørlandet','Bergen','Leangen','Momarken','Klosterskogen','Biri','Drammen','Harstad','Bodø'];
+    const DK_TRACKS = ['Klampenborg','Charlottenlund','Aalborg','Skive','Billund','Bornholm','Aarhus','Nykøbing'];
+    const flagFor = t => NO_TRACKS.some(n => t.includes(n)) ? '🇳🇴'
+                       : DK_TRACKS.some(n => t.includes(n)) ? '🇩🇰' : '🇸🇪';
+
     body.innerHTML = r.races.map(race => {
       const top3 = race.prediction.slice(0, 3);
       const otherCount = Math.max(race.prediction.length - 3, 0);
       const bt = race.blood_type || '';
       const timeFmt = race.start_time ? race.start_time.slice(11, 16) : '';
+      const flag = flagFor(race.track);
       return `
         <div style="margin-bottom:20px;padding:14px;background:rgba(255,255,255,.02);border-radius:8px;border:1px solid rgba(255,255,255,.05)">
           <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px;flex-wrap:wrap;gap:8px">
             <div>
+              <span style="font-size:1.05rem">${flag}</span>
               <strong style="font-size:1.1rem">${race.track}</strong>
               <span style="color:var(--muted);margin-left:8px">løp ${race.atg_id.split('_').pop()}</span>
               ${btBadge(bt)}

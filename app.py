@@ -281,14 +281,19 @@ def _bulk_worker(
         if "atg" in sources:
             with _bulk_lock:
                 _bulk_job["current"] = "Leser ATG-kalender…"
+            # Bruk samme land-valg som rikstoto (NO, SE, DK, ...) men begrens til
+            # ATG-relevante land (NO, SE, DK). ATG har bare nordiske + noen utenlandske.
+            atg_country_set = {c.upper() for c in countries if c.upper() in {"NO", "SE", "DK"}}
+            if not atg_country_set:
+                atg_country_set = {"SE"}   # fallback
             cur = datetime.date.fromisoformat(date_from)
             end = datetime.date.fromisoformat(date_to)
             while cur <= end:
                 if _stopped(): break
-                ids = _scraper.get_atg_race_ids(cur.isoformat())
+                ids = _scraper.get_atg_race_ids(cur.isoformat(), countries=atg_country_set)
                 atg_ids.extend(ids)
                 cur += datetime.timedelta(days=1)
-            _log(f"🔍 ATG {date_from} → {date_to}: {len(atg_ids)} løp")
+            _log(f"🔍 ATG {date_from} → {date_to} ({','.join(sorted(atg_country_set))}): {len(atg_ids)} løp")
 
         # ── Skip-if-exists: bygg sett av kjente race_id én gang ─────────────
         known = _known_race_ids()
@@ -620,14 +625,17 @@ def api_upcoming():
     Query-parametere:
       date_from: ISO-dato (default: i dag)
       date_to:   ISO-dato (default: i morgen)
+      countries: kommaseparert land-liste (default: NO,SE)
       predict:   '1' for å auto-predikere alle (default: '1')
     """
     date_from = request.args.get("date_from", datetime.date.today().isoformat())
     date_to   = request.args.get("date_to",
                                   (datetime.date.today() + datetime.timedelta(days=1)).isoformat())
+    countries_raw = request.args.get("countries", "NO,SE")
+    countries = {c.strip().upper() for c in countries_raw.split(",") if c.strip()}
     do_predict = request.args.get("predict", "1") != "0"
 
-    races = _scraper.fetch_atg_upcoming(date_from, date_to)
+    races = _scraper.fetch_atg_upcoming(date_from, date_to, countries=countries)
     if not races or (len(races) == 1 and "error" in races[0]):
         return jsonify({"races": [], "error": races[0].get("error") if races else "Ingen data"})
 
