@@ -1713,12 +1713,15 @@ async function loadUpcoming() {
     const flagFor = t => NO_TRACKS.some(n => t.includes(n)) ? '🇳🇴'
                        : DK_TRACKS.some(n => t.includes(n)) ? '🇩🇰' : '🇸🇪';
 
+    // Lagre full prediksjon globalt så vi kan ekspandere uten ny henting
+    window._upcomingRaces = {};
+    r.races.forEach(race => { window._upcomingRaces[race.race_id] = race; });
+
     body.innerHTML = r.races.map(race => {
-      const top3 = race.prediction.slice(0, 3);
-      const otherCount = Math.max(race.prediction.length - 3, 0);
       const bt = race.blood_type || '';
       const timeFmt = race.start_time ? race.start_time.slice(11, 16) : '';
       const flag = flagFor(race.track);
+      const safeId = race.race_id.replace(/[^a-zA-Z0-9_-]/g, '_');
       return `
         <div style="margin-bottom:20px;padding:14px;background:rgba(255,255,255,.02);border-radius:8px;border:1px solid rgba(255,255,255,.05)">
           <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px;flex-wrap:wrap;gap:8px">
@@ -1731,28 +1734,9 @@ async function loadUpcoming() {
             </div>
             <div style="color:var(--gold);font-size:1rem;font-weight:600">${timeFmt}</div>
           </div>
-          <table style="margin-bottom:0">
-            <thead>
-              <tr>
-                <th style="width:50px">#</th>
-                <th>Hest</th>
-                <th style="width:80px">Vinn-sj.</th>
-                <th style="width:80px">Marked</th>
-                <th style="width:80px">Spor</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${top3.map((p, i) => `
-                <tr${i===0 ? ' style="background:rgba(255,210,80,.06)"' : ''}>
-                  <td>${i+1}</td>
-                  <td><strong>${p.horse}</strong> <span style="color:var(--muted);font-size:.78rem">${p.jockey || ''}</span></td>
-                  <td><span style="color:${i===0?'var(--gold)':'var(--text)'};font-weight:600">${p.win_prob}%</span></td>
-                  <td>${p.odds ? p.odds.toFixed(2)+'x' : '–'}</td>
-                  <td>${p.start_pos ?? '–'}</td>
-                </tr>`).join('')}
-              ${otherCount ? `<tr><td colspan="5" style="color:var(--muted);font-size:.78rem;text-align:center">+ ${otherCount} flere</td></tr>` : ''}
-            </tbody>
-          </table>
+          <div id="upcoming-rows-${safeId}">
+            ${renderUpcomingRows(race, false)}
+          </div>
         </div>`;
     }).join('');
   } catch(e) {
@@ -1768,6 +1752,53 @@ async function loadUpcoming() {
     }
     body.innerHTML = `<div style="color:var(--red);padding:20px">❌ ${msg}${hint}</div>`;
   }
+}
+
+function renderUpcomingRows(race, expanded) {
+  const list = expanded ? race.prediction : race.prediction.slice(0, 3);
+  const safeId = race.race_id.replace(/[^a-zA-Z0-9_-]/g, '_');
+  const toggleLabel = expanded
+    ? '▲ Skjul (vis kun topp 3)'
+    : `▼ Vis alle ${race.prediction.length} hester`;
+  return `
+    <table style="margin-bottom:0">
+      <thead>
+        <tr>
+          <th style="width:50px">#</th>
+          <th>Hest</th>
+          <th style="width:80px">Vinn-sj.</th>
+          <th style="width:80px">Marked</th>
+          <th style="width:80px">Spor</th>
+          ${expanded ? '<th style="width:80px">PR/km</th><th>Kusk</th>' : ''}
+        </tr>
+      </thead>
+      <tbody>
+        ${list.map((p, i) => {
+          const isTop = i === 0;
+          return `<tr${isTop ? ' style="background:rgba(255,210,80,.06)"' : ''}>
+            <td>${i+1}</td>
+            <td><strong>${p.horse}</strong>${!expanded ? ` <span style="color:var(--muted);font-size:.78rem">${p.jockey || ''}</span>` : ''}</td>
+            <td><span style="color:${isTop?'var(--gold)':'var(--text)'};font-weight:600">${p.win_prob}%</span></td>
+            <td>${p.odds ? p.odds.toFixed(2)+'x' : '–'}</td>
+            <td>${p.start_pos ?? '–'}</td>
+            ${expanded ? `<td>${p.best_km_time ? fmtKmTime(p.best_km_time) : '–'}</td><td style="font-size:.85rem">${p.jockey || '–'}</td>` : ''}
+          </tr>`;
+        }).join('')}
+        ${race.prediction.length > 3 ? `
+          <tr><td colspan="${expanded ? 7 : 5}" style="text-align:center;padding:6px">
+            <a href="#" onclick="toggleUpcoming('${race.race_id}',${!expanded});return false"
+               style="color:var(--accent);text-decoration:none;font-size:.85rem">${toggleLabel}</a>
+          </td></tr>` : ''}
+      </tbody>
+    </table>`;
+}
+
+function toggleUpcoming(raceId, expand) {
+  const race = window._upcomingRaces?.[raceId];
+  if (!race) return;
+  const safeId = raceId.replace(/[^a-zA-Z0-9_-]/g, '_');
+  const el = document.getElementById('upcoming-rows-' + safeId);
+  if (el) el.innerHTML = renderUpcomingRows(race, expand);
 }
 
 /* ── Treffsikkerhet ───────────────────────────────────────────────────────── */
