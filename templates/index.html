@@ -1665,13 +1665,31 @@ async function doAutoMerge() {
 }
 
 /* ── Kommende løp ──────────────────────────────────────────────────────────── */
+// Lokal ISO-dato (unngår UTC-shift som gjør at "i dag" blir "i går" om kvelden)
+function localISO(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+// Pen norsk datoformatering: "lør. 24. mai 2026"
+function fmtNoDate(isoDate) {
+  if (!isoDate) return '';
+  const d = new Date(isoDate + 'T12:00:00');   // unngå tidssone-shift
+  if (isNaN(d)) return isoDate;
+  return d.toLocaleDateString('nb-NO', {
+    weekday: 'short', day: 'numeric', month: 'long', year: 'numeric'
+  });
+}
+
 function initUpcomingPage() {
   const today = new Date();
   const tomorrow = new Date(today.getTime() + 24*3600*1000);
   const f = document.getElementById('upcoming-from');
   const t = document.getElementById('upcoming-to');
-  if (!f.value) f.value = today.toISOString().slice(0,10);
-  if (!t.value) t.value = tomorrow.toISOString().slice(0,10);
+  if (!f.value) f.value = localISO(today);
+  if (!t.value) t.value = localISO(tomorrow);
   loadUpcoming();
 }
 
@@ -1726,7 +1744,7 @@ async function loadUpcoming() {
       let dateFmt = '', timeFmt = '?';
       if (race.start_time) {
         timeFmt = race.start_time.slice(11, 16);                    // "18:37"
-        dateFmt = race.start_time.slice(0, 10);                      // "2026-05-24"
+        dateFmt = fmtNoDate(race.start_time.slice(0, 10));           // "lør. 24. mai 2026"
       }
       const flag = flagFor(race.track);
       const safeId = race.race_id.replace(/[^a-zA-Z0-9_-]/g, '_');
