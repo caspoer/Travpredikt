@@ -987,11 +987,15 @@ def get_atg_upcoming_ids(
 
 
 def fetch_atg_upcoming(
-    date_from: str,
-    date_to: str | None = None,
-    countries: set | None = None,
+    date_from:   str,
+    date_to:     str | None = None,
+    countries:   set | None = None,
+    max_workers: int = 5,
 ) -> list[dict]:
-    """Henter kommende ATG-løp med startere, pre-race odds og horse-stats."""
+    """
+    Henter kommende ATG-løp med startere, pre-race odds og horse-stats.
+    Bruker parallell henting (5 workers default) for rask respons.
+    """
     if date_to is None:
         # Standard: dagens dato + 1 dag (vanlig spillevindu)
         d_from = datetime.date.fromisoformat(date_from)
@@ -1001,16 +1005,20 @@ def fetch_atg_upcoming(
     if not metas:
         return [{"error": f"Ingen kommende ATG-løp for {date_from}–{date_to}", "source": "atg"}]
 
-    all_races = []
-    for m in metas:
-        race = fetch_atg_race(m["race_id"])
-        if race:
-            # Markér eksplisitt at dette er et kommende løp (ikke ferdig)
-            race["status"] = m["status"]
+    # Behold meta-info per race_id for å sette status + start_time etterpå
+    meta_by_id = {m["race_id"]: m for m in metas}
+    race_ids   = [m["race_id"] for m in metas]
+
+    races = fetch_atg_races_parallel(race_ids, max_workers=max_workers)
+
+    # Berik med meta-info
+    for race in races:
+        rid = race["race_id"].replace("atg_", "")
+        m = meta_by_id.get(rid)
+        if m:
+            race["status"]     = m["status"]
             race["start_time"] = m["start_time"]
-            all_races.append(race)
-        time.sleep(0.2)
-    return all_races
+    return races
 
 
 # ── Felles fetch_all ──────────────────────────────────────────────────────────

@@ -1672,10 +1672,24 @@ async function loadUpcoming() {
   const status = document.getElementById('upcoming-status');
   const from   = document.getElementById('upcoming-from').value;
   const to     = document.getElementById('upcoming-to').value;
-  body.innerHTML = '<div class="loader"><div class="spinner"></div><div>Henter løp og predikerer…</div></div>';
+  body.innerHTML = '<div class="loader"><div class="spinner"></div><div>Henter løp og predikerer (kan ta 10-30 sek)…</div></div>';
   status.textContent = '';
+
+  // Eget timeout-handle (90 sek) for store dager
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 90000);
+
   try {
-    const r = await api(`/api/upcoming?date_from=${from}&date_to=${to}`);
+    const resp = await fetch(`/api/upcoming?date_from=${from}&date_to=${to}`, {
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+    if (!resp.ok) {
+      const txt = await resp.text();
+      body.innerHTML = `<div style="color:var(--red);padding:20px">❌ HTTP ${resp.status}: ${txt.slice(0, 200)}</div>`;
+      return;
+    }
+    const r = await resp.json();
     if (r.error || !r.races || r.races.length === 0) {
       body.innerHTML = `<div style="color:var(--muted);padding:20px">Ingen kommende løp funnet${r.error ? ' – '+r.error : ''}.</div>`;
       return;
@@ -1722,7 +1736,17 @@ async function loadUpcoming() {
         </div>`;
     }).join('');
   } catch(e) {
-    body.innerHTML = `<div style="color:var(--red)">❌ ${e.message}</div>`;
+    clearTimeout(timeoutId);
+    let msg = e.message;
+    let hint = '';
+    if (e.name === 'AbortError') {
+      msg = 'Forespørsel tidsavbrutt (>90 sek)';
+      hint = '<br><span style="color:var(--muted);font-size:.85rem">Prøv kortere periode (kun i dag).</span>';
+    } else if (e.message === 'Failed to fetch') {
+      msg = 'Får ikke kontakt med serveren';
+      hint = '<br><span style="color:var(--muted);font-size:.85rem">Sjekk at Flask kjører: <code>python app.py</code> i prosjektmappen.</span>';
+    }
+    body.innerHTML = `<div style="color:var(--red);padding:20px">❌ ${msg}${hint}</div>`;
   }
 }
 
