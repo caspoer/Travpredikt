@@ -561,6 +561,80 @@ def api_horse_auto_merge():
     return jsonify(analyzer.auto_merge_by_reg_no())
 
 
+# ── API: Kommende løp + prediksjoner ─────────────────────────────────────────
+
+@app.route("/api/upcoming")
+def api_upcoming():
+    """
+    Lister kommende ATG-løp med pre-race odds og våre prediksjoner.
+
+    Query-parametere:
+      date_from: ISO-dato (default: i dag)
+      date_to:   ISO-dato (default: i morgen)
+      predict:   '1' for å auto-predikere alle (default: '1')
+    """
+    date_from = request.args.get("date_from", datetime.date.today().isoformat())
+    date_to   = request.args.get("date_to",
+                                  (datetime.date.today() + datetime.timedelta(days=1)).isoformat())
+    do_predict = request.args.get("predict", "1") != "0"
+
+    races = _scraper.fetch_atg_upcoming(date_from, date_to)
+    if not races or (len(races) == 1 and "error" in races[0]):
+        return jsonify({"races": [], "error": races[0].get("error") if races else "Ingen data"})
+
+    # Lagre racene + horse-stats i DB (samme som vanlig henting),
+    # slik at /api/race/<race_id> kan hente detaljer senere.
+    _save_races(races)
+
+    out = []
+    for race in races:
+        starters = race.get("results", [])
+        race_block = {
+            "race_id":    race["race_id"],
+            "atg_id":     race["race_id"].replace("atg_", ""),
+            "track":      race["track"],
+            "date":       race["date"],
+            "start_time": race.get("start_time"),
+            "status":     race.get("status"),
+            "distance":   race["distance"],
+            "blood_type": race["blood_type"],
+            "race_type":  race["race_type"],
+            "n_starters": sum(1 for s in starters if not s.get("scratched")),
+            "starters":   [],
+            "prediction": [],
+        }
+
+        if do_predict:
+            horses = [s["horse_name"] for s in starters if not s.get("scratched")]
+            jockeys         = {s["horse_name"]: s["jockey"]         for s in starters}
+            trainers        = {s["horse_name"]: s["trainer"]        for s in starters}
+            odds            = {s["horse_name"]: s["odds"]           for s in starters if s["odds"]}
+            start_positions = {s["horse_name"]: s["start_pos"]      for s in starters}
+            extra_distances = {s["horse_name"]: s["extra_distance"] for s in starters}
+
+            ranked = ml_model.predict_field(
+                horses, jockeys, odds,
+                start_positions=start_positions,
+                extra_distances=extra_distances,
+                trainers=trainers,
+            )
+            race_block["prediction"] = ranked
+            predictor.save_predictions(race["race_id"], ranked)
+
+        out.append(race_block)
+
+    return jsonify({"races": out, "count": len(out),
+                    "date_from": date_from, "date_to": date_to})
+
+
+@app.route("/api/predictions/accuracy")
+def api_prediction_accuracy():
+    """Sammenligner lagrede prediksjoner mot faktiske resultater."""
+    limit      = int(request.args.get("limit", 200))
+    blood_type = request.args.get("blood_type", None)
+    return jsonify(analyzer.prediction_accuracy(limit=limit, blood_type=blood_type))
+
+
 @app.route("/api/horse/<name>/enrichment")
 def api_horse_enrichment(name):
     """Returnerer ATG-berikelse for en hest (alder, kjønn, inntekter, PR)."""

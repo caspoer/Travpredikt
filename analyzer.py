@@ -314,6 +314,172 @@ def recent_races(limit: int = 20, blood_type: str | None = None) -> list[dict]:
 
 # ─── Løpsdetaljer ────────────────────────────────────────────────────────────
 
+def prediction_accuracy(
+    limit: int = 200,
+    blood_type: str | None = None,
+) -> dict:
+    """
+    Beregner treffsikkerhet ved å sammenligne lagrede prediksjoner med
+    faktiske resultater. Returnerer både aggregat-metrikker og en liste
+    med per-løp-detaljer (de siste N).
+
+    Metrikker:
+      - n_races:           antall løp med både prediksjon og resultat
+      - top1_hit_rate:     andel der vår #1 vant
+      - top3_hit_rate:     andel der vår #1 ble topp-3
+      - avg_pick_pos:      gjennomsnittlig faktisk posisjon for vår #1
+      - brier_score:       Sum (pred - actual)^2 / N  (lavere = bedre)
+      - log_loss:          -avg log(pred for winner)  (lavere = bedre)
+      - roi_top1:          gevinst hvis vi alltid spilte 1 kr på vår #1
+                            til markedsodds (krever odds-data)
+      - baseline_top1:     1 / gjennomsnittlig felt-størrelse (random-guess)
+    """
+    import math
+
+    with get_conn() as conn:
+        # Hent alle løp som har BÅDE prediksjoner OG faktisk vinner.
+        # Plukker vår #1 (høyeste win_prob) per løp.
+        params: list = []
+        bt_filter = ""
+        if blood_type and blood_type != "alle":
+            bt_filter = "AND rc.blood_type = ?"
+            params.append(blood_type)
+
+        rows = conn.execute(f"""
+            WITH our_pick AS (
+                -- Vår topp-pick per løp
+                SELECT p.race_id,
+                       p.horse_name AS pick_name,
+                       p.win_prob   AS pick_prob,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY p.race_id
+                           ORDER BY p.win_prob DESC, p.score DESC, p.id
+                       ) AS rn
+                FROM predictions p
+            ),
+            winners AS (
+                -- Faktisk vinner per løp
+                SELECT race_id, horse_name AS winner_name
+                FROM results
+                WHERE position = 1
+            ),
+            picks AS (
+                SELECT op.race_id, op.pick_name, op.pick_prob
+                FROM our_pick op
+                WHERE op.rn = 1
+            )
+            SELECT picks.race_id,
+                   picks.pick_name,
+                   picks.pick_prob,
+                   winners.winner_name,
+                   rc.date,
+                   rc.track,
+                   rc.blood_type,
+                   r.position    AS pick_actual_pos,
+                   r.odds        AS pick_odds,
+                   (SELECT COUNT(*) FROM results rr
+                    WHERE rr.race_id = picks.race_id AND rr.position IS NOT NULL) AS field_size
+            FROM picks
+            JOIN winners ON winners.race_id = picks.race_id
+            JOIN races   rc ON rc.race_id   = picks.race_id
+            LEFT JOIN results r
+                   ON r.race_id    = picks.race_id
+                  AND LOWER(r.horse_name) = LOWER(picks.pick_name)
+            WHERE 1=1 {bt_filter}
+            ORDER BY rc.date DESC, rc.id DESC
+            LIMIT ?
+        """, (*params, limit)).fetchall()
+
+    if not rows:
+        return {
+            "n_races":        0,
+            "top1_hit_rate":  None,
+            "top3_hit_rate":  None,
+            "avg_pick_pos":   None,
+            "brier_score":    None,
+            "log_loss":       None,
+            "roi_top1":       None,
+            "baseline_top1":  None,
+            "details":        [],
+        }
+
+    n_races         = 0
+    n_top1          = 0
+    n_top3          = 0
+    sum_pick_pos    = 0
+    n_with_pos      = 0
+    sum_field_size  = 0
+    brier_terms     = []
+    logloss_terms   = []
+    roi_stakes      = 0
+    roi_payout      = 0.0
+
+    details = []
+    for r in rows:
+        is_winner = (r["pick_name"] or "").lower() == (r["winner_name"] or "").lower()
+        is_top3   = r["pick_actual_pos"] is not None and r["pick_actual_pos"] <= 3
+        pred_p    = (r["pick_prob"] or 0) / 100.0   # 0–1
+
+        n_races += 1
+        if is_winner:
+            n_top1 += 1
+        if is_top3:
+            n_top3 += 1
+        if r["pick_actual_pos"] is not None:
+            sum_pick_pos += r["pick_actual_pos"]
+            n_with_pos   += 1
+        if r["field_size"]:
+            sum_field_size += r["field_size"]
+
+        # Brier: (pred - actual)^2 (actual=1 hvis vant, 0 ellers)
+        actual = 1 if is_winner else 0
+        brier_terms.append((pred_p - actual) ** 2)
+        # Log-loss: -log(pred hvis vant, 1-pred hvis tap)
+        p_clip = max(min(pred_p, 0.999), 0.001)
+        if is_winner:
+            logloss_terms.append(-math.log(p_clip))
+        else:
+            logloss_terms.append(-math.log(1 - p_clip))
+
+        # ROI: spill 1 kr på vår topp-pick til markedsodds
+        if r["pick_odds"]:
+            roi_stakes += 1
+            if is_winner:
+                roi_payout += float(r["pick_odds"])
+
+        details.append({
+            "race_id":    r["race_id"],
+            "date":       r["date"],
+            "track":      r["track"],
+            "blood_type": r["blood_type"],
+            "pick":       r["pick_name"],
+            "pick_prob":  r["pick_prob"],
+            "winner":     r["winner_name"],
+            "pick_pos":   r["pick_actual_pos"],
+            "pick_odds":  r["pick_odds"],
+            "field_size": r["field_size"],
+            "hit_top1":   is_winner,
+            "hit_top3":   is_top3,
+        })
+
+    avg_field = sum_field_size / n_races if n_races else 10.0
+
+    return {
+        "n_races":       n_races,
+        "top1_hit_rate": round(n_top1 / n_races * 100, 1),
+        "top3_hit_rate": round(n_top3 / n_races * 100, 1),
+        "avg_pick_pos":  round(sum_pick_pos / n_with_pos, 2) if n_with_pos else None,
+        "brier_score":   round(sum(brier_terms) / len(brier_terms), 4),
+        "log_loss":      round(sum(logloss_terms) / len(logloss_terms), 4),
+        "roi_top1":      round((roi_payout - roi_stakes) / roi_stakes * 100, 1)
+                            if roi_stakes else None,
+        "roi_stakes":    roi_stakes,
+        "baseline_top1": round(100 / avg_field, 1),   # forventet random hit-rate
+        "avg_field":     round(avg_field, 1),
+        "details":       details,
+    }
+
+
 def race_detail(race_id: str) -> dict:
     with get_conn() as conn:
         race = conn.execute(

@@ -851,6 +851,74 @@ def fetch_atg_results(
     return all_races
 
 
+def get_atg_upcoming_ids(
+    date_from: str,
+    date_to: str,
+    countries: set | None = None,
+) -> list[dict]:
+    """
+    Henter race-IDer for KOMMENDE løp (status != results) for en periode.
+    Returnerer [{race_id, status, start_time}] sortert kronologisk.
+    """
+    if countries is None:
+        countries = ATG_COUNTRIES
+
+    d_from = datetime.date.fromisoformat(date_from)
+    d_to   = datetime.date.fromisoformat(date_to)
+
+    out = []
+    cur = d_from
+    while cur <= d_to:
+        date_str = cur.isoformat()
+        data = _atg_get(f"{ATG_BASE}/calendar/day/{date_str}?headToHeadEnabled=true")
+        if data:
+            for track in data.get("tracks", []):
+                if track.get("countryCode", "") not in countries:
+                    continue
+                for race in track.get("races", []):
+                    status = race.get("status", "")
+                    if status != "results":
+                        out.append({
+                            "race_id":    race["id"],
+                            "status":     status,
+                            "track":      track.get("name", ""),
+                            "race_num":   race.get("number"),
+                            "start_time": race.get("startTime", ""),
+                        })
+        cur += datetime.timedelta(days=1)
+        time.sleep(0.2)
+
+    out.sort(key=lambda x: x["start_time"])
+    return out
+
+
+def fetch_atg_upcoming(
+    date_from: str,
+    date_to: str | None = None,
+    countries: set | None = None,
+) -> list[dict]:
+    """Henter kommende ATG-løp med startere, pre-race odds og horse-stats."""
+    if date_to is None:
+        # Standard: dagens dato + 1 dag (vanlig spillevindu)
+        d_from = datetime.date.fromisoformat(date_from)
+        date_to = (d_from + datetime.timedelta(days=1)).isoformat()
+
+    metas = get_atg_upcoming_ids(date_from, date_to, countries)
+    if not metas:
+        return [{"error": f"Ingen kommende ATG-løp for {date_from}–{date_to}", "source": "atg"}]
+
+    all_races = []
+    for m in metas:
+        race = fetch_atg_race(m["race_id"])
+        if race:
+            # Markér eksplisitt at dette er et kommende løp (ikke ferdig)
+            race["status"] = m["status"]
+            race["start_time"] = m["start_time"]
+            all_races.append(race)
+        time.sleep(0.2)
+    return all_races
+
+
 # ── Felles fetch_all ──────────────────────────────────────────────────────────
 
 def fetch_all(
