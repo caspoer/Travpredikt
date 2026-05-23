@@ -117,12 +117,17 @@ def _save_races(races: list[dict]) -> int:
                 try:
                     conn.execute("""
                         INSERT OR IGNORE INTO results
-                            (race_id, horse_name, position, start_pos, jockey, trainer, odds, time_sec)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            (race_id, horse_name, position, start_pos,
+                             jockey, trainer, odds, time_sec,
+                             extra_distance, win_odds, horse_reg_no)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, (race["race_id"], entry.get("horse_name", ""),
                           entry.get("position"), entry.get("start_pos"),
                           entry.get("jockey", ""), entry.get("trainer", ""),
-                          entry.get("odds"), entry.get("time_sec")))
+                          entry.get("odds"), entry.get("time_sec"),
+                          entry.get("extra_distance", 0),
+                          entry.get("win_odds"),
+                          entry.get("horse_reg_no")))
                 except Exception:
                     pass
     return saved

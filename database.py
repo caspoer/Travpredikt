@@ -44,16 +44,19 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS results (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            race_id     TEXT REFERENCES races(race_id),
-            horse_name  TEXT,
-            position    INTEGER,
-            start_pos   INTEGER,
-            jockey      TEXT,
-            trainer     TEXT,
-            odds        REAL,
-            time_sec    REAL,
-            scratched   INTEGER DEFAULT 0
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            race_id         TEXT REFERENCES races(race_id),
+            horse_name      TEXT,
+            position        INTEGER,
+            start_pos       INTEGER,
+            jockey          TEXT,
+            trainer         TEXT,
+            odds            REAL,
+            time_sec        REAL,
+            scratched       INTEGER DEFAULT 0,
+            extra_distance  INTEGER DEFAULT 0,
+            win_odds        REAL,
+            horse_reg_no    TEXT
         );
 
         CREATE TABLE IF NOT EXISTS predictions (
@@ -67,8 +70,11 @@ def init_db():
         """)
         # Migrer eksisterende DB: legg til kolonner om de mangler
         for col, tbl, default in [
-            ("blood_type", "races",  "'varmblod'"),
-            ("blood_type", "horses", "'varmblod'"),
+            ("blood_type",     "races",   "'varmblod'"),
+            ("blood_type",     "horses",  "'varmblod'"),
+            ("extra_distance", "results", "0"),
+            ("win_odds",       "results", "NULL"),
+            ("horse_reg_no",   "results", "NULL"),
         ]:
             try:
                 conn.execute(f"ALTER TABLE {tbl} ADD COLUMN {col} TEXT DEFAULT {default}")

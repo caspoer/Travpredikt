@@ -110,13 +110,34 @@ def _starts(raceday_key: str) -> dict[str, list]:
     return {str(k): v for k, v in result.items()}
 
 
-def _results(raceday_key: str) -> dict[str, list]:
-    """Dict: raceNumber → [{place, startNumber}]."""
+def _results(raceday_key: str) -> tuple[dict[str, list], dict[str, dict]]:
+    """
+    Returnerer:
+      - results_by_race: raceNumber → [{place, startNumber}]
+      - win_odds_by_race: raceNumber → {startNumber: odds}  (kun vinneren)
+    """
     data = _get(f"{BASE}/results/racedays/{raceday_key}/raceresults")
     if not data or "error" in data:
-        return {}
-    rr = data.get("result", {}).get("raceResults", {})
-    return {str(k): v for k, v in rr.items()}
+        return {}, {}
+
+    result = data.get("result", {})
+    rr = result.get("raceResults", {})
+    results_by_race = {str(k): v for k, v in rr.items()}
+
+    # winOdds: {raceNum: {startNum: {odds, payoutStatus}}}
+    win_odds_raw = result.get("finalOdds", {}).get("winOdds", {})
+    win_odds_by_race: dict[str, dict] = {}
+    for race_num, starters in win_odds_raw.items():
+        # Kun én startNumber per løp (vinneren)
+        for start_num_str, odds_data in starters.items():
+            odds_val = odds_data.get("odds")
+            if odds_val is not None:
+                win_odds_by_race[str(race_num)] = {
+                    "start_num": int(start_num_str),
+                    "odds":      float(odds_val),
+                }
+
+    return results_by_race, win_odds_by_race
 
 
 def _sport_to_blood(sport_type: str, track: str = "") -> str:
@@ -130,13 +151,16 @@ def fetch_raceday(meta: dict) -> list[dict]:
     rdk  = meta["raceDay"]
     date = meta["date"]
 
-    starts_by_race  = _starts(rdk)
-    results_by_race = _results(rdk)
+    starts_by_race              = _starts(rdk)
+    results_by_race, win_odds_by_race = _results(rdk)
 
     races = []
     for race_num_str, runners in starts_by_race.items():
         result_list = results_by_race.get(race_num_str, [])
         place_map   = {str(r["startNumber"]): r["place"] for r in result_list}
+
+        # Vinnerodd for dette løpet (kun for vinneren)
+        wo_info = win_odds_by_race.get(race_num_str)  # {"start_num": N, "odds": X}
 
         race_id = f"rikstoto_{rdk}_{race_num_str}"
         race = {
@@ -152,17 +176,27 @@ def fetch_raceday(meta: dict) -> list[dict]:
         }
 
         for runner in runners:
-            sn  = str(runner.get("startNumber", ""))
-            pos = place_map.get(sn)
+            sn       = str(runner.get("startNumber", ""))
+            sn_int   = runner.get("startNumber")
+            pos      = place_map.get(sn)
+
+            # Vinnerodd: kun sett på hesten som faktisk vant
+            win_odds = None
+            if wo_info and sn_int == wo_info["start_num"]:
+                win_odds = wo_info["odds"]
+
             race["results"].append({
-                "horse_name": runner.get("horseName", ""),
-                "position":   pos,
-                "start_pos":  runner.get("startNumber"),
-                "jockey":     runner.get("driverName", ""),
-                "trainer":    "",
-                "odds":       None,
-                "time_sec":   None,
-                "scratched":  1 if runner.get("isScratched") else 0,
+                "horse_name":    runner.get("horseName", ""),
+                "position":      pos,
+                "start_pos":     sn_int,
+                "jockey":        runner.get("driverName", ""),
+                "trainer":       "",
+                "odds":          None,
+                "time_sec":      None,
+                "scratched":     1 if runner.get("isScratched") else 0,
+                "extra_distance": runner.get("extraDistance", 0) or 0,
+                "win_odds":      win_odds,
+                "horse_reg_no":  runner.get("horseRegistrationNumber"),
             })
 
         if race["results"]:
