@@ -1717,14 +1717,22 @@ async function loadUpcoming() {
     window._upcomingRaces = {};
     r.races.forEach(race => { window._upcomingRaces[race.race_id] = race; });
 
+    // Sorter etter starttid for å gjøre rekkefølgen logisk
+    r.races.sort((a, b) => (a.start_time || '').localeCompare(b.start_time || ''));
+
     body.innerHTML = r.races.map(race => {
       const bt = race.blood_type || '';
-      const timeFmt = race.start_time ? race.start_time.slice(11, 16) : '';
+      // Vis dato + tid hvis tilgjengelig, ellers "?"
+      let dateFmt = '', timeFmt = '?';
+      if (race.start_time) {
+        timeFmt = race.start_time.slice(11, 16);                    // "18:37"
+        dateFmt = race.start_time.slice(0, 10);                      // "2026-05-24"
+      }
       const flag = flagFor(race.track);
       const safeId = race.race_id.replace(/[^a-zA-Z0-9_-]/g, '_');
       return `
         <div style="margin-bottom:20px;padding:14px;background:rgba(255,255,255,.02);border-radius:8px;border:1px solid rgba(255,255,255,.05)">
-          <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px;flex-wrap:wrap;gap:8px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px">
             <div>
               <span style="font-size:1.05rem">${flag}</span>
               <strong style="font-size:1.1rem">${race.track}</strong>
@@ -1732,7 +1740,10 @@ async function loadUpcoming() {
               ${btBadge(bt)}
               <span style="color:var(--muted);font-size:.85rem;margin-left:8px">${race.distance}m · ${race.n_starters} startere</span>
             </div>
-            <div style="color:var(--gold);font-size:1rem;font-weight:600">${timeFmt}</div>
+            <div style="text-align:right">
+              <div style="color:var(--gold);font-size:1.4rem;font-weight:700;line-height:1">🕐 ${timeFmt}</div>
+              <div style="color:var(--muted);font-size:.75rem;margin-top:2px">${dateFmt}</div>
+            </div>
           </div>
           <div id="upcoming-rows-${safeId}">
             ${renderUpcomingRows(race, false)}
