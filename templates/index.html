@@ -1688,8 +1688,9 @@ function initUpcomingPage() {
   const tomorrow = new Date(today.getTime() + 24*3600*1000);
   const f = document.getElementById('upcoming-from');
   const t = document.getElementById('upcoming-to');
-  if (!f.value) f.value = localISO(today);
-  if (!t.value) t.value = localISO(tomorrow);
+  // Tving alltid default til 1-2 dager — lange perioder feiler
+  f.value = localISO(today);
+  t.value = localISO(tomorrow);
   loadUpcoming();
 }
 
@@ -1703,12 +1704,18 @@ async function loadUpcoming() {
     body.innerHTML = '<div style="color:var(--gold);padding:20px">Velg minst ett land.</div>';
     return;
   }
-  body.innerHTML = '<div class="loader"><div class="spinner"></div><div>Henter løp og predikerer (kan ta 10-30 sek)…</div></div>';
+  // Anslag basert på periode-lengde
+  const days = Math.max(1, Math.round((new Date(to) - new Date(from)) / 86400000) + 1);
+  const est = Math.max(10, days * 8);
+  body.innerHTML = `<div class="loader"><div class="spinner"></div>
+    <div>Henter løp og predikerer for ${days} dag${days>1?'er':''} (anslag ~${est} sek)…</div>
+    <div style="color:var(--muted);font-size:.78rem;margin-top:6px">Velg gjerne kortere periode for raskere svar</div>
+    </div>`;
   status.textContent = '';
 
-  // Eget timeout-handle (90 sek) for store dager
+  // Eget timeout-handle (5 min) for store perioder
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 90000);
+  const timeoutId = setTimeout(() => controller.abort(), 300000);
 
   try {
     const url = `/api/upcoming?date_from=${from}&date_to=${to}&countries=${encodeURIComponent(countries)}`;
@@ -1773,8 +1780,8 @@ async function loadUpcoming() {
     let msg = e.message;
     let hint = '';
     if (e.name === 'AbortError') {
-      msg = 'Forespørsel tidsavbrutt (>90 sek)';
-      hint = '<br><span style="color:var(--muted);font-size:.85rem">Prøv kortere periode (kun i dag).</span>';
+      msg = 'Forespørsel tidsavbrutt (>5 min)';
+      hint = '<br><span style="color:var(--muted);font-size:.85rem">Prøv kortere periode (1-2 dager).</span>';
     } else if (e.message === 'Failed to fetch') {
       msg = 'Får ikke kontakt med serveren';
       hint = '<br><span style="color:var(--muted);font-size:.85rem">Sjekk at Flask kjører: <code>python app.py</code> i prosjektmappen.</span>';

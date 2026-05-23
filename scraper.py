@@ -990,7 +990,7 @@ def fetch_atg_upcoming(
     date_from:   str,
     date_to:     str | None = None,
     countries:   set | None = None,
-    max_workers: int = 5,
+    max_workers: int = 10,
 ) -> list[dict]:
     """
     Henter kommende ATG-løp med startere, pre-race odds og horse-stats.
