@@ -401,6 +401,7 @@ Fjord Hauk" style="width:100%;background:var(--surface);border:1px solid var(--b
         <div class="row" style="flex-wrap:wrap;gap:14px;margin-bottom:0">
           <label><input type="checkbox" class="fetch-src-cb" value="rikstoto" checked> 🏇 rikstoto.no <span style="font-size:.75rem;color:var(--muted)">(API)</span></label>
           <label><input type="checkbox" class="fetch-src-cb" value="travsport"> 📋 travsport.no <span style="font-size:.75rem;color:var(--muted)">(tid + distanse)</span></label>
+          <label><input type="checkbox" class="fetch-src-cb" value="atg"> 🇸🇪 atg.se <span style="font-size:.75rem;color:var(--muted)">(svensk trav + galopp)</span></label>
         </div>
       </div>
       <div style="margin-bottom:14px" id="fetch-countries-wrap">
@@ -420,8 +421,8 @@ Fjord Hauk" style="width:100%;background:var(--surface);border:1px solid var(--b
     <div class="card">
       <div class="card-title">📆 Hent historiske resultater (bulk)</div>
       <p style="color:var(--muted);font-size:.83rem;margin-bottom:16px">
-        Henter alle stevner (racedays) i perioden via Rikstoto-APIet – én batch per 30 dager.
-        Støtter NO, SE, DK og FI. Med 1 s forsinkelse tar 1 år ca. 3–6 min. Du kan stoppe når som helst.
+        Henter historiske resultater fra valgte kilder. Rikstoto støtter NO/SE/DK/FI.
+        ATG henter svenske løp direkte fra atg.se (SE). Med 1 s forsinkelse tar 1 år ca. 3–6 min. Du kan stoppe når som helst.
       </p>
       <div class="row" style="flex-wrap:wrap;gap:16px;align-items:center">
         <div>
@@ -448,6 +449,7 @@ Fjord Hauk" style="width:100%;background:var(--surface);border:1px solid var(--b
         <div class="row" style="flex-wrap:wrap;gap:14px;margin-bottom:0">
           <label><input type="checkbox" class="bulk-src-cb" value="rikstoto" checked> 🏇 rikstoto.no <span style="font-size:.75rem;color:var(--muted)">(NO/SE/DK/FI via API)</span></label>
           <label><input type="checkbox" class="bulk-src-cb" value="travsport"> 📋 travsport.no <span style="font-size:.75rem;color:var(--muted)">(norsk trav – tid + distanse)</span></label>
+          <label><input type="checkbox" class="bulk-src-cb" value="atg"> 🇸🇪 atg.se <span style="font-size:.75rem;color:var(--muted)">(svensk trav + galopp)</span></label>
         </div>
       </div>
       <div style="margin-bottom:18px" id="bulk-countries-wrap">
