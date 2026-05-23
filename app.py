@@ -82,6 +82,55 @@ def _log(msg: str):
 
 # ── Hjelpefunksjoner ─────────────────────────────────────────────────────────
 
+def _save_horse_stats_atg(conn, horse_stats: list[dict]) -> None:
+    """
+    Oppdaterer horse_stats_atg-tabellen.
+    Bruker UPSERT for å oppdatere eksisterende rader med nyere data.
+    """
+    for hs in horse_stats:
+        if not hs.get("horse_reg_no"):
+            continue
+        try:
+            conn.execute("""
+                INSERT INTO horse_stats_atg
+                    (horse_reg_no, name, age, sex, color, money,
+                     life_starts, life_wins, life_2nd, life_3rd,
+                     life_win_pct, life_place_pct, best_time_sec,
+                     father_name, mother_name, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                ON CONFLICT(horse_reg_no) DO UPDATE SET
+                    name           = excluded.name,
+                    age            = excluded.age,
+                    sex            = excluded.sex,
+                    color          = excluded.color,
+                    money          = excluded.money,
+                    life_starts    = excluded.life_starts,
+                    life_wins      = excluded.life_wins,
+                    life_2nd       = excluded.life_2nd,
+                    life_3rd       = excluded.life_3rd,
+                    life_win_pct   = excluded.life_win_pct,
+                    life_place_pct = excluded.life_place_pct,
+                    best_time_sec  = CASE
+                        WHEN excluded.best_time_sec IS NULL THEN horse_stats_atg.best_time_sec
+                        WHEN horse_stats_atg.best_time_sec IS NULL THEN excluded.best_time_sec
+                        WHEN excluded.best_time_sec < horse_stats_atg.best_time_sec
+                            THEN excluded.best_time_sec
+                        ELSE horse_stats_atg.best_time_sec
+                    END,
+                    father_name    = COALESCE(excluded.father_name, horse_stats_atg.father_name),
+                    mother_name    = COALESCE(excluded.mother_name, horse_stats_atg.mother_name),
+                    updated_at     = datetime('now')
+            """, (hs["horse_reg_no"], hs.get("name"), hs.get("age"),
+                  hs.get("sex"), hs.get("color"), hs.get("money"),
+                  hs.get("life_starts"), hs.get("life_wins"),
+                  hs.get("life_2nd"), hs.get("life_3rd"),
+                  hs.get("life_win_pct"), hs.get("life_place_pct"),
+                  hs.get("best_time_sec"),
+                  hs.get("father_name"), hs.get("mother_name")))
+        except Exception:
+            pass
+
+
 def _save_races(races: list[dict]) -> int:
     """Lagrer løp og returnerer antall nye løp lagret.
 
@@ -90,12 +139,20 @@ def _save_races(races: list[dict]) -> int:
       2. Resultater skrives bare inn når løpet er nytt (cur.rowcount == 1).
       3. results(race_id, horse_name) har UNIQUE-indeks + INSERT OR IGNORE
          som siste sikkerhetsnett mot delvise gjenhentinger.
+
+    horse_stats (fra ATG) lagres alltid – også når løpet er kjent fra før –
+    siden vi vil oppdatere heste-berikelse hver gang vi ser hesten.
     """
     saved = 0
     with get_conn() as conn:
         for race in races:
             if "error" in race:
                 continue
+
+            # ATG-berikelse: lagres alltid (uavhengig av om løpet er nytt)
+            if race.get("horse_stats"):
+                _save_horse_stats_atg(conn, race["horse_stats"])
+
             try:
                 cur = conn.execute("""
                     INSERT OR IGNORE INTO races
@@ -397,13 +454,37 @@ def api_race(race_id):
 
 @app.route("/api/predict", methods=["POST"])
 def api_predict():
+    """
+    Ranger et felt av hester.
+
+    Body:
+      horses:  ["Hest A", "Hest B", ...]
+      jockeys: {"Hest A": "Kusk X", ...}     – valgfritt
+      odds:    {"Hest A": 3.45, ...}         – valgfritt (pre-race vinnerodds)
+      race_id: "atg_2026-05-24_17_1"         – valgfritt (lagrer prediksjon)
+
+    Hvis race_id er gitt og det er et ATG-løp, henter vi automatisk
+    pre-race odds fra databasen.
+    """
     body    = request.get_json(force=True)
     horses  = body.get("horses", [])
     jockeys = body.get("jockeys", {})
+    odds    = body.get("odds", {})
+    race_id = body.get("race_id")
+
     if not horses:
         return jsonify({"error": "Tom hesteliste"}), 400
-    ranked  = ml_model.predict_field(horses, jockeys)
-    race_id = body.get("race_id")
+
+    # Auto-fyll odds fra databasen hvis race_id er gitt og odds mangler
+    if race_id and not odds:
+        with get_conn() as conn:
+            rows = conn.execute("""
+                SELECT horse_name, odds FROM results
+                WHERE race_id = ? AND odds IS NOT NULL
+            """, (race_id,)).fetchall()
+        odds = {r["horse_name"]: r["odds"] for r in rows}
+
+    ranked = ml_model.predict_field(horses, jockeys, odds)
     if race_id:
         predictor.save_predictions(race_id, ranked)
     return jsonify(ranked)
@@ -455,6 +536,18 @@ def api_horse_merge():
 @app.route("/api/horse/aliases")
 def api_horse_aliases():
     return jsonify(analyzer.list_aliases())
+
+
+@app.route("/api/horse/auto_merge", methods=["POST"])
+def api_horse_auto_merge():
+    """Slår automatisk sammen alle hester med samme horse_reg_no."""
+    return jsonify(analyzer.auto_merge_by_reg_no())
+
+
+@app.route("/api/horse/<name>/enrichment")
+def api_horse_enrichment(name):
+    """Returnerer ATG-berikelse for en hest (alder, kjønn, inntekter, PR)."""
+    return jsonify(analyzer.horse_enrichment(name))
 
 
 @app.route("/api/horse/alias/<path:alias_name>", methods=["DELETE"])

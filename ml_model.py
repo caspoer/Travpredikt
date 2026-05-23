@@ -64,6 +64,18 @@ FEATURE_COLS = [
 ]
 
 
+# ─── Eksplisitte prediksjonsvekter (justert for marked-komponent) ────────────
+# Markedsodds er den sterkeste enkelt-prediktoren i hestesport-litteraturen,
+# så vi gir den størst vekt. De andre komponentene tas litt ned for å gi plass.
+W_MARKET        = 0.30   # pre-race vinnerodds (markedskonsensus) — NY
+W_CAPACITY      = 0.25   # personlig rekord / hest-kapasitet (PR-tid) – var 0.35
+W_FORM_TOP3     = 0.20   # topp-3-plasseringer siste 5 løp – var 0.25
+W_TOP3_CAREER   = 0.10   # topp-3% karriere (konsistens) – var 0.20
+W_WIN_TOTAL     = 0.05   # vunnede løp totalt (Bayesiansk win-rate) – var 0.10
+# W_JOCKEY uendret (0.10)
+# Sum: 0.30 + 0.25 + 0.20 + 0.10 + 0.05 + 0.10 = 1.00
+
+
 # ── Bulk-statistikk (brukes til prediksjon) ───────────────────────────────────
 
 def _precompute_horse_stats(conn) -> dict:
@@ -135,6 +147,59 @@ def _precompute_horse_stats(conn) -> dict:
         for row in time_rows:
             if row["name"] in stats:
                 stats[row["name"]]["best_km_time"] = float(row["best_km_time"])
+    except Exception:
+        pass
+
+    # ATG-berikelse: PR-tid og livstidsstatistikk fra horse_stats_atg-tabellen.
+    # Disse overrider/supplerer egne tall siden ATG ofte har mer komplette data
+    # (livstid, ikke bare det vi har scrapet).
+    try:
+        enrich_rows = conn.execute("""
+            SELECT LOWER(name)     AS name,
+                   best_time_sec,
+                   life_win_pct,
+                   life_place_pct,
+                   life_starts,
+                   age,
+                   money
+            FROM horse_stats_atg
+            WHERE name IS NOT NULL AND name != ''
+        """).fetchall()
+        for row in enrich_rows:
+            key = row["name"]
+            if key not in stats:
+                # Hesten finnes i ATG-berikelse men ikke i egne resultater ennå
+                # → opprett basis-record så vi får nytte av berikelsen
+                stats[key] = {
+                    "has_data": 1,
+                    "races":    row["life_starts"] or 0,
+                    "win_rate_smooth":  PRIOR_WIN_RATE,
+                    "top3_rate_smooth": PRIOR_TOP3_RATE,
+                    "experience_norm":  min((row["life_starts"] or 0) / 30.0, 1.0),
+                    "avg_pos_5": 5.0,
+                    "won_last":  0,
+                }
+
+            # Beste km-tid: bruk ATG-verdien hvis den finnes (mer pålitelig)
+            if row["best_time_sec"]:
+                cur = stats[key].get("best_km_time")
+                atg_kmt = float(row["best_time_sec"])
+                if cur is None or atg_kmt < cur:
+                    stats[key]["best_km_time"] = atg_kmt
+
+            # Livstids-statistikk: oppdater hvis vi har færre data-punkter
+            life_n = row["life_starts"] or 0
+            if life_n > stats[key].get("races", 0):
+                wins_life = round((row["life_win_pct"] or 0) / 100.0 * life_n)
+                top3_life = round((row["life_place_pct"] or 0) / 100.0 * life_n)
+                stats[key]["win_rate_smooth"]  = (wins_life + ALPHA_WIN)  / (life_n + ALPHA_WIN  + BETA_WIN)
+                stats[key]["top3_rate_smooth"] = (top3_life + ALPHA_TOP3) / (life_n + ALPHA_TOP3 + BETA_TOP3)
+                stats[key]["experience_norm"]  = min(life_n / 30.0, 1.0)
+                stats[key]["races"]            = life_n
+
+            # Berikelses-info for visning
+            stats[key]["atg_age"]   = row["age"]
+            stats[key]["atg_money"] = row["money"]
     except Exception:
         pass
 
@@ -557,14 +622,28 @@ def get_meta() -> dict:
 
 # ── Prediksjon ────────────────────────────────────────────────────────────────
 
-def predict_field(horses: list, jockeys: dict | None = None) -> list:
+def predict_field(
+    horses: list,
+    jockeys: dict | None = None,
+    odds:    dict | None = None,
+) -> list:
     """
-    Ranger et felt. Bruker ML-modell hvis trent, ellers Bayesiansk heuristikk.
+    Ranger et felt med 6 vektede komponenter:
+      - Markedsodds (30%): pre-race vinnerodds som markedskonsensus
+      - Kapasitet (25%): personlig rekord (km-tid)
+      - Form (20%): topp-3 siste 5 løp
+      - Konsistens (10%): topp-3% karriere
+      - Vinn-rate (5%): smoothed win rate
+      - Kusk (10%): vinnerprosent siste 40 løp
+
+    Hvis odds=None for en hest → bruker markeds-rang 0.5 (nøytral).
     """
     if not horses:
         return []
     if jockeys is None:
         jockeys = {}
+    if odds is None:
+        odds = {}
 
     with get_conn() as conn:
         horse_stats  = _precompute_horse_stats(conn)
@@ -625,13 +704,35 @@ def predict_field(horses: list, jockeys: dict | None = None) -> list:
                          for name in horses]
     top3_career_ranks = _ranks(top3_career_vals)
 
-    # ── Komponent 5 (10 %): vinnede løp totalt ──────────────────────────────
+    # ── Komponent 5 (5 %): vinnede løp totalt ───────────────────────────────
     win_vals  = [horse_stats.get(name.lower(), {}).get("win_rate_smooth", PRIOR_WIN_RATE)
                  for name in horses]
     win_ranks = _ranks(win_vals)
 
+    # ── Komponent 6 (30 %): pre-race markedsodds ────────────────────────────
+    # Lavere odds = mer favoritt = bedre rang.
+    # Hester uten odds får nøytral rang 0.5.
+    #
+    # Vi rangerer kun hester MED odds-data, og setter resten til 0.5.
+    odds_vals = [odds.get(name) for name in horses]
+    market_ranks = [0.5] * n
+    odds_indexed = [(i, o) for i, o in enumerate(odds_vals)
+                    if o is not None and 0 < o < 9999]
+    if len(odds_indexed) >= 2:
+        # Sorter etter odds (lavest først = favoritt = beste rang)
+        odds_sorted = sorted(odds_indexed, key=lambda x: x[1])
+        n_with_odds = len(odds_sorted)
+        # Bruk samme min_rank=0.15 som de andre komponentene
+        div  = max(n_with_odds - 1, 1)
+        span = 1.0 - 0.15
+        for rank, (idx, _) in enumerate(odds_sorted):
+            market_ranks[idx] = 1.0 - rank / div * span
+    elif len(odds_indexed) == 1:
+        market_ranks[odds_indexed[0][0]] = 1.0   # eneste med odds → markedsfavoritt
+
     # ── Endelig score med eksplisitte vekter ─────────────────────────────────
     raw_scores = np.array([
+        W_MARKET      * market_ranks[i]      +
         W_CAPACITY    * cap_ranks[i]         +
         W_FORM_TOP3   * form_ranks[i]        +
         W_TOP3_CAREER * top3_career_ranks[i] +
@@ -664,12 +765,14 @@ def predict_field(horses: list, jockeys: dict | None = None) -> list:
             "win_prob":        round(float(probs[i]) * 100, 1),
             "score":           round(float(raw_probs[i]), 4),
             # Komponentskårer (brukt i vekting)
-            "cap_rank":        round(cap_ranks[i] * 100, 1),
-            "form_top3":       round(form_vals[i] * 100, 1),          # % av siste 5 som var topp-3
-            "top3_career":     round(top3_career_vals[i] * 100, 1),   # karriere topp-3% (konsistens)
-            "win_rate":        round(s.get("win_rate_smooth",  PRIOR_WIN_RATE) * 100, 1),
-            "jockey_wr":       round(jwr_display * 100, 1),           # jockey siste 40 løp
+            "market_rank":     round(market_ranks[i] * 100, 1),       # 30% – pre-race odds
+            "cap_rank":        round(cap_ranks[i] * 100, 1),          # 25% – PR
+            "form_top3":       round(form_vals[i] * 100, 1),          # 20% – topp-3 siste 5
+            "top3_career":     round(top3_career_vals[i] * 100, 1),   # 10% – karriere topp-3%
+            "win_rate":        round(s.get("win_rate_smooth",  PRIOR_WIN_RATE) * 100, 1),  # 5%
+            "jockey_wr":       round(jwr_display * 100, 1),           # 10% – jockey siste 40 løp
             # Ekstra info
+            "odds":            odds.get(name),                        # input-odds (eller None)
             "top3_rate":       round(s.get("top3_rate_smooth", PRIOR_TOP3_RATE) * 100, 1),
             "form":            round((1.0 - min(s.get("avg_pos_5", 5.0), 10.0) / 10.0) * 100, 1),
             "jockey":          jockey_disp,
@@ -677,6 +780,8 @@ def predict_field(horses: list, jockeys: dict | None = None) -> list:
             "has_data":        bool(s.get("has_data", 0)),
             "jockey_from_db":  not bool(jockey_provided),
             "best_km_time":    round(best_kmt, 2) if best_kmt else None,
+            "atg_age":         s.get("atg_age"),
+            "atg_money":       s.get("atg_money"),                    # livstidsinntekter (øre)
             "used_ml":         used_ml,
         })
 

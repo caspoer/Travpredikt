@@ -323,8 +323,20 @@ def race_detail(race_id: str) -> dict:
         if not race:
             return {}
 
+        # NULL-plasseringer (disq/scratched) skal sist, ikke først.
         starters = conn.execute("""
-            SELECT * FROM results WHERE race_id = ? ORDER BY position
+            SELECT r.*,
+                   s.age   AS atg_age,
+                   s.sex   AS atg_sex,
+                   s.money AS atg_money,
+                   s.life_starts AS atg_life_starts,
+                   s.life_win_pct AS atg_life_win_pct,
+                   s.best_time_sec AS atg_best_time
+            FROM results r
+            LEFT JOIN horse_stats_atg s ON s.horse_reg_no = r.horse_reg_no
+            WHERE r.race_id = ?
+            ORDER BY CASE WHEN r.position IS NULL THEN 999 ELSE r.position END,
+                     r.start_pos
         """, (race_id,)).fetchall()
 
     return {
@@ -390,20 +402,129 @@ def delete_alias(alias_name: str) -> dict:
     return {"status": "ok", "deleted": alias}
 
 
+def auto_merge_by_reg_no() -> dict:
+    """
+    Finner alle hester der samme horse_reg_no har flere ulike navn (innenfor
+    samme kilde-konvensjon) og slår dem sammen automatisk.
+
+    Velger som kanonisk navn:
+      - Det navnet som forekommer flest ganger
+      - Ved likhet: alfabetisk første
+
+    horse_reg_no har forskjellig format per kilde:
+      - rikstoto: 15-sifret ITU-format ('578001020120391')
+      - ATG:      6-sifret intern ID ('766018')
+    Vi grupperer derfor pr. reg_no, ikke pr. (reg_no, source) – siden samme
+    nummer betyr samme hest INNENFOR det formatet.
+    """
+    from collections import Counter, defaultdict
+
+    with get_conn() as conn:
+        rows = conn.execute("""
+            SELECT horse_reg_no,
+                   LOWER(horse_name) AS name_key,
+                   COUNT(*)          AS occurrences
+            FROM results
+            WHERE horse_reg_no IS NOT NULL
+              AND horse_reg_no != ''
+              AND horse_name IS NOT NULL
+              AND horse_name != ''
+            GROUP BY horse_reg_no, LOWER(horse_name)
+        """).fetchall()
+
+        # Grupper: reg_no → [(navn, antall), ...]
+        by_reg: dict = defaultdict(list)
+        for r in rows:
+            by_reg[r["horse_reg_no"]].append((r["name_key"], r["occurrences"]))
+
+        merges_created = 0
+        merges_skipped = 0
+        details: list[dict] = []
+
+        for reg_no, name_counts in by_reg.items():
+            if len(name_counts) < 2:
+                continue   # ingen flere navn-varianter for samme ID
+
+            # Velg kanonisk: høyest antall, deretter alfabetisk
+            name_counts_sorted = sorted(name_counts, key=lambda x: (-x[1], x[0]))
+            canonical = name_counts_sorted[0][0]
+            aliases   = [n for n, _ in name_counts_sorted[1:]]
+
+            for alias in aliases:
+                if alias == canonical:
+                    continue
+                # Sjekk om aliaset allerede finnes som canonical (kjede)
+                existing = conn.execute(
+                    "SELECT canonical FROM horse_aliases WHERE alias = ?",
+                    (alias,)
+                ).fetchone()
+                if existing and existing["canonical"] == canonical:
+                    merges_skipped += 1
+                    continue
+
+                conn.execute("""
+                    INSERT OR REPLACE INTO horse_aliases(alias, canonical)
+                    VALUES (?, ?)
+                """, (alias, canonical))
+                merges_created += 1
+                details.append({
+                    "reg_no":    reg_no,
+                    "alias":     alias,
+                    "canonical": canonical,
+                })
+
+    return {
+        "status":         "ok",
+        "merges_created": merges_created,
+        "merges_skipped": merges_skipped,
+        "details":        details[:50],   # begrens responsstørrelse
+    }
+
+
+def horse_enrichment(name: str) -> dict:
+    """
+    Returnerer ATG-berikelse for en hest (alder, kjønn, livstidsinntekter, PR).
+    Slår opp via horse_aliases → kanonisk navn → horse_stats_atg.
+    """
+    with get_conn() as conn:
+        canon = _resolve(name, conn)
+
+        # Slå opp via navn (case-insensitive)
+        row = conn.execute("""
+            SELECT * FROM horse_stats_atg
+            WHERE LOWER(name) = ?
+            ORDER BY updated_at DESC
+            LIMIT 1
+        """, (canon,)).fetchone()
+
+        if not row:
+            # Fallback: prøv også alle aliaser
+            row = conn.execute("""
+                SELECT s.* FROM horse_stats_atg s
+                JOIN horse_aliases a ON LOWER(s.name) = a.alias
+                WHERE a.canonical = ?
+                ORDER BY s.updated_at DESC
+                LIMIT 1
+            """, (canon,)).fetchone()
+
+    return dict(row) if row else {}
+
+
 def suggest_duplicates(limit: int = 30) -> list[dict]:
     """
     Foreslår mulige duplikater basert på:
     - Samme dato og posisjon (sterk indikasjon på dobbeltregistrering)
-    - Nesten identisk navn (samme tre første bokstaver, maks 5 tegns lengdeforskjell)
+    - Nesten identisk navn (samme fire første bokstaver, maks 4 tegns lengdeforskjell)
+    - Samme navn i ulike kilder (rikstoto vs travsport vs atg) → "kilde-overlapp"
 
     Bruker Python-side gruppering for å unngå treg SQL self-join.
     """
     from collections import defaultdict
 
     with get_conn() as conn:
-        # Hent alle (navn, dato, posisjon)-kombinasjoner
+        # Hent alle (navn, dato, posisjon, source)-kombinasjoner
         rows = conn.execute("""
-            SELECT LOWER(r.horse_name) AS name, rc.date, r.position
+            SELECT LOWER(r.horse_name) AS name, rc.date, r.position, rc.source
             FROM results r
             JOIN races rc ON r.race_id = rc.race_id
             WHERE r.position IS NOT NULL
@@ -418,14 +539,17 @@ def suggest_duplicates(limit: int = 30) -> list[dict]:
 
     # Bygg indeks: (dato, posisjon) → set av hestenavn
     dp_index: dict = defaultdict(set)
+    # Bygg også: navn → set av kilder (for cross-source-deteksjon)
+    name_sources: dict = defaultdict(set)
     for row in rows:
         dp_index[(row["date"], row["position"])].add(row["name"])
+        if row["source"]:
+            name_sources[row["name"]].add(row["source"])
 
     # Tell delte (dato, posisjon)-par for hvert navnepar.
-    # Kriterier for å være kandidat:
-    #   - Samme fire første bokstaver (strammere enn 3 for færre falske treff)
-    #   - Maks 4 tegns lengdeforskjell (reelle duplikater skiller seg typisk kun
-    #     med et lands-suffiks som " N" eller " S")
+    # Kriterier:
+    #   - Samme fire første bokstaver
+    #   - Maks 4 tegns lengdeforskjell
     pair_counts: dict = defaultdict(int)
     for names in dp_index.values():
         lst = sorted(names)
@@ -443,7 +567,18 @@ def suggest_duplicates(limit: int = 30) -> list[dict]:
         if cnt < 2:
             break  # sortert fallende – resten er også < 2
         if (n1, n2) not in known_pairs and (n2, n1) not in known_pairs:
-            result.append({"name1": n1, "name2": n2, "shared_races": cnt})
+            # Annoter med hvilke kilder navnene finnes i
+            src1 = sorted(name_sources.get(n1, set()))
+            src2 = sorted(name_sources.get(n2, set()))
+            cross = "ja" if (set(src1) - set(src2)) or (set(src2) - set(src1)) else "nei"
+            result.append({
+                "name1":         n1,
+                "name2":         n2,
+                "shared_races":  cnt,
+                "source1":       ",".join(src1) or "?",
+                "source2":       ",".join(src2) or "?",
+                "cross_source":  cross,
+            })
         if len(result) >= limit:
             break
 

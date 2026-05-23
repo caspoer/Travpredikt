@@ -59,6 +59,7 @@
   .badge-n { background: rgba(100,100,130,.15); color: var(--muted); }
   .badge-green { background: rgba(76,175,125,.15); color: var(--green); }
   .badge-red { background: rgba(224,82,82,.15); color: var(--red); }
+  .badge-orange { background: rgba(255,160,60,.18); color: #ffa83c; }
   .badge-kald { background: rgba(80,160,255,.15); color: #5fbfff; }
   .badge-varm { background: rgba(255,140,60,.15); color: #ff9f50; }
   .badge-galopp { background: rgba(200,80,200,.15); color: #d96dd9; }
@@ -184,7 +185,14 @@
     <div class="card" id="race-detail-card" style="display:none">
       <div class="card-title" id="race-detail-title">Løpsdetaljer</div>
       <table>
-        <thead><tr><th>Pl.</th><th>Hest</th><th>Jockey</th><th>Trener</th><th>Odds</th><th>Tid</th></tr></thead>
+        <thead><tr>
+          <th>Pl.</th><th>Hest</th><th>Jockey</th><th>Trener</th>
+          <th title="Pre-race vinnerodds">Odds</th>
+          <th title="Faktisk utbetalt vinnerodd">Utbetalt</th>
+          <th>Tid</th>
+          <th title="Alder / kjønn (ATG)">Alder</th>
+          <th title="Personlig rekord (km-tid)">PR/km</th>
+        </tr></thead>
         <tbody id="race-detail-body"></tbody>
       </table>
     </div>
@@ -363,12 +371,24 @@ Fjord Hauk" style="width:100%;background:var(--surface);border:1px solid var(--b
       <div id="merge-status" style="margin-top:12px;font-size:.85rem"></div>
     </div>
 
+    <!-- Auto-merge via reg.nr -->
+    <div class="card">
+      <div class="card-title">⚡ Auto-slå-sammen via heste-ID</div>
+      <p style="color:var(--muted);font-size:.83rem;margin-bottom:14px">
+        Slår automatisk sammen alle hester som har samme <code>horse_reg_no</code> (rikstoto eller ATG sin interne ID).
+        Disse er garantert samme hest, selv om navnene er stavet ulikt.
+      </p>
+      <button onclick="doAutoMerge()">⚡ Kjør auto-merge</button>
+      <div id="auto-merge-status" style="margin-top:12px;font-size:.85rem"></div>
+    </div>
+
     <!-- Foreslåtte duplikater -->
     <div class="card">
       <div class="card-title">🔍 Mulige duplikater (automatisk oppdaget)</div>
       <p style="color:var(--muted);font-size:.83rem;margin-bottom:14px">
         Hester med lignende navn som har konkurrert på samme dato med samme plassering.
         Klikk «Slå sammen» for å slå dem sammen (alias → kanonisk).
+        Kolonnen <em>Kilder</em> viser om navnene finnes i ulike datakilder.
       </p>
       <div id="dupes-body">
         <div class="loader"><div class="spinner"></div></div>
@@ -713,7 +733,7 @@ async function loadRaceDetail(raceId) {
   const body  = document.getElementById('race-detail-body');
   card.style.display = 'block';
   card.scrollIntoView({ behavior: 'smooth' });
-  body.innerHTML = '<tr><td colspan="6">Laster…</td></tr>';
+  body.innerHTML = '<tr><td colspan="9">Laster…</td></tr>';
   try {
     const d = await api('/api/race/' + encodeURIComponent(raceId));
     const bt = d.race.blood_type ?? '';
@@ -721,17 +741,26 @@ async function loadRaceDetail(raceId) {
     body.innerHTML = d.starters.map(s => {
       const pos = s.position;
       const bc  = pos === 1 ? 'badge-1' : pos === 2 ? 'badge-2' : pos === 3 ? 'badge-3' : 'badge-n';
-      return `<tr>
+      const ageSex = s.atg_age
+        ? `${s.atg_age}å ${s.atg_sex === 'gelding' ? '♂' : s.atg_sex === 'mare' ? '♀' : s.atg_sex === 'stallion' ? '♂' : ''}`
+        : '–';
+      const winOddsCell = s.win_odds
+        ? `<span style="color:var(--green);font-weight:600">${s.win_odds}x</span>`
+        : (pos === 1 ? '<span style="color:var(--muted)">–</span>' : '');
+      return `<tr${s.scratched ? ' style="opacity:0.5"' : ''}>
         <td><span class="badge ${bc}">${pos ?? '–'}</span></td>
-        <td><strong>${s.horse_name}</strong></td>
+        <td><strong>${s.horse_name}</strong>${s.scratched ? ' <span style="color:var(--muted);font-size:.7rem">(strøken)</span>' : ''}</td>
         <td>${s.jockey ?? '–'}</td>
         <td>${s.trainer ?? '–'}</td>
         <td>${s.odds ? s.odds+'x' : '–'}</td>
+        <td>${winOddsCell}</td>
         <td>${s.time_sec ? fmtTime(s.time_sec) : '–'}</td>
+        <td style="font-size:.85rem">${ageSex}</td>
+        <td style="font-size:.85rem">${s.atg_best_time ? fmtKmTime(s.atg_best_time) : '–'}</td>
       </tr>`;
     }).join('');
   } catch(e) {
-    body.innerHTML = `<tr><td colspan="6" style="color:var(--red)">${e.message}</td></tr>`;
+    body.innerHTML = `<tr><td colspan="9" style="color:var(--red)">${e.message}</td></tr>`;
   }
 }
 
@@ -1126,21 +1155,25 @@ async function runPredictWithHorses(horses, bloodType, jockeys = {}) {
                  style="width:${h.win_prob}%;${!first ? `background:${accentColor}` : ''}"></div>
           </div>
           <div style="display:flex;gap:14px;margin-top:8px;font-size:.78rem;color:var(--muted);flex-wrap:wrap">
-            <span title="35% vekt – personlig rekord / hest-kapasitet">
-              ⏱ PR: <strong style="color:var(--text)">${h.best_km_time ? fmtKmTime(h.best_km_time)+'/km' : '–'}</strong>
-              <span style="font-size:.7rem;opacity:.6">(35%)</span>
+            <span title="30% vekt – pre-race markedsodds (markedskonsensus)">
+              💰 Marked: <strong style="color:var(--text)">${h.odds ? h.odds.toFixed(2)+'x' : '–'}</strong>
+              <span style="font-size:.7rem;opacity:.6">(30%)</span>
             </span>
-            <span title="25% vekt – topp-3 siste 5 løp (form)">
-              📈 Form: <strong style="color:var(--text)">${h.form_top3}%</strong>
+            <span title="25% vekt – personlig rekord / hest-kapasitet">
+              ⏱ PR: <strong style="color:var(--text)">${h.best_km_time ? fmtKmTime(h.best_km_time)+'/km' : '–'}</strong>
               <span style="font-size:.7rem;opacity:.6">(25%)</span>
             </span>
-            <span title="20% vekt – topp-3% karriere (konsistens)">
-              🎯 Konsistens: <strong style="color:var(--text)">${h.top3_career}%</strong>
+            <span title="20% vekt – topp-3 siste 5 løp (form)">
+              📈 Form: <strong style="color:var(--text)">${h.form_top3}%</strong>
               <span style="font-size:.7rem;opacity:.6">(20%)</span>
             </span>
-            <span title="10% vekt – vinnede løp totalt">
-              🏆 Vinn%: <strong style="color:var(--text)">${h.win_rate}%</strong>
+            <span title="10% vekt – topp-3% karriere (konsistens)">
+              🎯 Konsistens: <strong style="color:var(--text)">${h.top3_career}%</strong>
               <span style="font-size:.7rem;opacity:.6">(10%)</span>
+            </span>
+            <span title="5% vekt – vinnede løp totalt">
+              🏆 Vinn%: <strong style="color:var(--text)">${h.win_rate}%</strong>
+              <span style="font-size:.7rem;opacity:.6">(5%)</span>
             </span>
             <span title="10% vekt – jockey siste 40 løp">
               🎽 Kusk: <strong style="color:var(--text)">${h.jockey_wr}%</strong>
@@ -1408,21 +1441,27 @@ async function loadDuplicates() {
     }
     el.innerHTML = `
       <table>
-        <thead><tr><th>Alias (foreslått)</th><th></th><th>Kanonisk (foreslått)</th><th>Felles løp</th><th></th></tr></thead>
+        <thead><tr><th>Alias (foreslått)</th><th></th><th>Kanonisk (foreslått)</th><th>Felles løp</th><th>Kilder</th><th></th></tr></thead>
         <tbody>
-          ${dupes.map(d => `
+          ${dupes.map(d => {
+            const crossBadge = d.cross_source === 'ja'
+              ? `<span class="badge badge-orange" title="Navnene finnes i ulike datakilder">↔ kryss</span>`
+              : '';
+            return `
             <tr id="dupe-${d.name1.replace(/\W/g,'_')}_${d.name2.replace(/\W/g,'_')}">
-              <td><strong>${d.name1}</strong></td>
+              <td><strong>${d.name1}</strong><br><span style="font-size:.72rem;color:var(--muted)">${d.source1 || '?'}</span></td>
               <td style="color:var(--muted)">→</td>
-              <td><strong>${d.name2}</strong></td>
+              <td><strong>${d.name2}</strong><br><span style="font-size:.72rem;color:var(--muted)">${d.source2 || '?'}</span></td>
               <td><span class="badge badge-green">${d.shared_races}</span></td>
+              <td>${crossBadge}</td>
               <td>
                 <button class="secondary" style="padding:4px 10px;font-size:.78rem"
                   onclick="mergeSuggested('${d.name1}','${d.name2}',this)">🔗 Slå sammen</button>
                 <button class="secondary" style="padding:4px 10px;font-size:.78rem;margin-left:4px"
                   onclick="swapAndMergeSuggested('${d.name1}','${d.name2}',this)">↔ Bytt retning</button>
               </td>
-            </tr>`).join('')}
+            </tr>`;
+          }).join('')}
         </tbody>
       </table>`;
   } catch(e) {
@@ -1525,6 +1564,26 @@ async function deleteAlias(alias, btn) {
     toast(`Alias '${alias}' fjernet`);
     await loadAliases();
   } catch(e) { toast(e.message, false); btn.disabled = false; }
+}
+
+async function doAutoMerge() {
+  const status = document.getElementById('auto-merge-status');
+  status.innerHTML = '<span style="color:var(--muted)">Kjører…</span>';
+  try {
+    const r = await api('/api/horse/auto_merge', { method: 'POST' });
+    if (r.merges_created === 0) {
+      status.innerHTML = '<span style="color:var(--muted)">✓ Ingen nye sammenslåinger – alle hester med samme reg.nr har allerede ett navn.</span>';
+    } else {
+      const examples = (r.details || []).slice(0, 3)
+        .map(d => `<code>${d.alias}</code> → <code>${d.canonical}</code>`).join(', ');
+      status.innerHTML = `<span style="color:var(--green)">✅ Slo sammen <strong>${r.merges_created}</strong> hester via heste-ID</span>`
+                       + (examples ? `<br><span style="color:var(--muted);font-size:.78rem">Eksempel: ${examples}</span>` : '');
+      toast(`${r.merges_created} hester auto-slått sammen`);
+      await Promise.all([loadDuplicates(), loadAliases()]);
+    }
+  } catch(e) {
+    status.innerHTML = `<span style="color:var(--red)">❌ ${e.message}</span>`;
+  }
 }
 
 /* ── Kilde-toggle: skjul land-valg når rikstoto er av ────────────────────── */

@@ -597,26 +597,100 @@ def _atg_position(finish_order: int | None, n_starters: int) -> int | None:
     return None   # disq / DNF / scratch
 
 
+def _atg_extract_horse_stats(horse: dict) -> dict | None:
+    """
+    Trekker ut beriket horse-statistikk fra ATG sin `horse`-struktur.
+    Returnerer dict med felt til horse_stats_atg-tabellen, eller None hvis ID mangler.
+    """
+    reg_no = horse.get("id")
+    if not reg_no:
+        return None
+
+    stats     = horse.get("statistics", {})
+    life      = stats.get("life", {})
+    placement = life.get("placement", {})
+    pedigree  = horse.get("pedigree", {})
+
+    # Vinst/plass i prosent: ATG bruker promille (8200 = 82.00%)
+    # → bygg om til prosent (0–100)
+    def _pct(v):
+        if v is None:
+            return None
+        try:
+            return round(float(v) / 100.0, 2)
+        except (TypeError, ValueError):
+            return None
+
+    # Personlig rekord: finn raskeste sekunder/km på tvers av alle records
+    best_kmt = None
+    for rec in life.get("records", []):
+        t = _atg_time_sec(rec.get("time"))
+        if t is None or t <= 0:
+            continue
+        # ATG-tid er sek/km direkte ("1.13,0" = 1 min 13.0 sek per km)
+        if best_kmt is None or t < best_kmt:
+            best_kmt = t
+
+    return {
+        "horse_reg_no":   str(reg_no),
+        "name":           horse.get("name", ""),
+        "age":            horse.get("age"),
+        "sex":            horse.get("sex"),
+        "color":          horse.get("color"),
+        "money":          life.get("earnings") or horse.get("money"),
+        "life_starts":    life.get("starts"),
+        "life_wins":      placement.get("1"),
+        "life_2nd":       placement.get("2"),
+        "life_3rd":       placement.get("3"),
+        "life_win_pct":   _pct(life.get("winPercentage")),
+        "life_place_pct": _pct(life.get("placePercentage")),
+        "best_time_sec":  best_kmt,
+        "father_name":    (pedigree.get("father") or {}).get("name"),
+        "mother_name":    (pedigree.get("mother") or {}).get("name"),
+    }
+
+
 def fetch_atg_race(race_id: str) -> dict | None:
     """
     Henter ett ATG-løp og returnerer et race-dict kompatibelt med _save_races.
+
+    Bruker /services/racinginfo/v1/api/games/vinnare_{id} fordi det gir oss
+    ALT i én forespørsel:
+      - Race-metadata (distanse, sport, bane, terms)
+      - Komplette startere med horse-statistikk og pedigree
+      - Pre-race vinnerodds per starter (NOK! markedsindikator)
+      - Resultat-plassering for ferdige løp
+
     race_id har format '{dato}_{bane_id}_{loepsnr}', f.eks. '2026-05-23_16_1'.
     """
-    data = _atg_get(f"{ATG_BASE}/races/{race_id}")
-    if not data:
+    url = f"https://www.atg.se/services/racinginfo/v1/api/games/vinnare_{race_id}"
+    try:
+        r = requests.get(url, headers=ATG_HEADERS, timeout=15)
+        r.raise_for_status()
+        data = r.json()
+    except Exception:
         return None
 
-    date      = data.get("date", race_id[:10])
-    track     = data.get("track", {})
-    starts    = data.get("starts", [])
-    sport     = data.get("sport", "trot")
+    races = data.get("races", [])
+    if not races:
+        return None
+    race = races[0]
+
+    date      = race.get("date", race_id[:10])
+    track     = race.get("track", {})
+    starts    = race.get("starts", [])
+    sport     = race.get("sport", "trot")
     n         = len(starts)
 
+    # Berikelses-data (horse_stats_atg) for hver hest
+    horse_stats: list[dict] = []
     results = []
+
     for s in starts:
         horse  = s.get("horse", {})
         driver = s.get("driver", {})
         res    = s.get("result", {})
+        pools  = s.get("pools", {})
 
         # Navn
         horse_name = horse.get("name", "")
@@ -636,18 +710,24 @@ def fetch_atg_race(race_id: str) -> dict | None:
             trainer_d.get("lastName", ""),
         ])).strip()
 
-        # Plassering
+        # Pre-race vinnerodds (ATG bruker hundredeler: 4192 → 41.92x)
+        # Strøkne har odds=0, "ikke spillbar" har odds=9999
+        odds_raw = (pools.get("vinnare") or {}).get("odds")
+        odds = None
+        if odds_raw is not None and 0 < odds_raw < 9999:
+            odds = round(odds_raw / 100.0, 2)
+
+        # Plassering (gyldig kun innenfor antall startere)
         position = _atg_position(res.get("finishOrder"), n)
 
-        # Tid: ATG gir ikke løpstid per hest, men best time fra statistikk
-        # Bruk hestens personlige rekord som referanse (ikke løpstid!)
-        time_sec = None   # ATG gir ikke faktisk løpstid per starter i dette endepunktet
-
-        # Scratched: ATG viser ikke strøkne i starterlisten
+        # Disq/scratched: hvis odds=0 og posisjon mangler eller > n
         scratched = 0
+        finish = res.get("finishOrder")
+        if odds_raw == 0 and (finish is None or finish > n):
+            scratched = 1
 
-        # Individuelle handikap-meter (postPosition vs distance på løpet)
-        race_dist = data.get("distance")
+        # Individuelle handikap-meter (forskjell mellom løpets distanse og hestens)
+        race_dist  = race.get("distance")
         start_dist = s.get("distance")
         extra_dist = 0
         if race_dist and start_dist and start_dist > race_dist:
@@ -659,34 +739,58 @@ def fetch_atg_race(race_id: str) -> dict | None:
             "start_pos":     s.get("number"),
             "jockey":        jockey,
             "trainer":       trainer,
-            "odds":          None,
-            "time_sec":      time_sec,
+            "odds":          odds,             # PRE-race vinnerodds
+            "time_sec":      None,             # ATG gir ikke faktisk løpstid
             "scratched":     scratched,
             "extra_distance": extra_dist,
-            "win_odds":      None,
+            "win_odds":      None,             # post-race utbetaling sett separat
             "horse_reg_no":  str(horse.get("id")) if horse.get("id") else None,
         })
+
+        # Berik hesteprofilen
+        hs = _atg_extract_horse_stats(horse)
+        if hs:
+            horse_stats.append(hs)
 
     if not results:
         return None
 
+    # Post-race utbetalt vinnerodds: pools.vinnare.result.winners[0]
+    race_pools = race.get("pools", {})
+    winner_info = (race_pools.get("vinnare") or {}).get("result", {}).get("winners", [])
+    if winner_info:
+        w_num  = winner_info[0].get("number")
+        w_odds = winner_info[0].get("odds")
+        if w_num is not None and w_odds is not None:
+            w_odds_dec = round(float(w_odds) / 100.0, 2)
+            for r in results:
+                if r["start_pos"] == w_num:
+                    r["win_odds"] = w_odds_dec
+                    break
+
     return {
-        "source":     "atg",
-        "race_id":    f"atg_{race_id}",
-        "date":       date,
-        "track":      track.get("name", ""),
-        "distance":   data.get("distance"),
-        "surface":    "grus",
-        "race_type":  _atg_sport_to_race_type(sport),
-        "blood_type": _atg_blood_type(data),
-        "results":    results,
+        "source":      "atg",
+        "race_id":     f"atg_{race_id}",
+        "date":        date,
+        "track":       track.get("name", ""),
+        "distance":    race.get("distance"),
+        "surface":     "grus",
+        "race_type":   _atg_sport_to_race_type(sport),
+        "blood_type":  _atg_blood_type(race),
+        "results":     results,
+        "horse_stats": horse_stats,    # eget felt - lagres separat
     }
 
 
-def get_atg_race_ids(date: str, countries: set | None = None) -> list[str]:
+def get_atg_race_ids(
+    date: str,
+    countries: set | None = None,
+    only_finished: bool = True,
+) -> list[str]:
     """
-    Henter alle race-IDer med status 'results' for en dato fra ATG.
-    Filtrerer på land (default: kun SE).
+    Henter alle race-IDer for en dato fra ATG.
+    Filtrerer på land (default: kun SE) og status.
+    only_finished=True henter bare ferdige løp (status='results').
     """
     if countries is None:
         countries = ATG_COUNTRIES
@@ -701,8 +805,10 @@ def get_atg_race_ids(date: str, countries: set | None = None) -> list[str]:
         if country not in countries:
             continue
         for race in track.get("races", []):
-            if race.get("status") == "results":
-                ids.append(race["id"])
+            status = race.get("status", "")
+            if only_finished and status != "results":
+                continue
+            ids.append(race["id"])
     return ids
 
 

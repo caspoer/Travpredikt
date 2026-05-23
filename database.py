@@ -67,6 +67,32 @@ def init_db():
             win_prob    REAL,
             created_at  TEXT DEFAULT (datetime('now'))
         );
+
+        -- Heste-berikelse fra ATG (per hest, ikke per loep).
+        -- Oppdateres hver gang vi henter et ATG-loep der hesten deltar.
+        -- horse_reg_no = ATG sin interne heste-ID (ikke samme system som rikstoto!)
+        CREATE TABLE IF NOT EXISTS horse_stats_atg (
+            horse_reg_no    TEXT PRIMARY KEY,
+            name            TEXT,
+            age             INTEGER,
+            sex             TEXT,
+            color           TEXT,
+            money           INTEGER,        -- livstidsinntekter i oere
+            life_starts     INTEGER,
+            life_wins       INTEGER,
+            life_2nd        INTEGER,
+            life_3rd        INTEGER,
+            life_win_pct    REAL,           -- vinnerprosent (livstid)
+            life_place_pct  REAL,           -- topp-3-prosent (livstid)
+            best_time_sec   REAL,           -- beste personlige rekord (sek)
+            father_name     TEXT,
+            mother_name     TEXT,
+            updated_at      TEXT DEFAULT (datetime('now'))
+        );
+
+        -- Indeks for navnoppslag (case-insensitive)
+        CREATE INDEX IF NOT EXISTS idx_horse_stats_atg_name
+            ON horse_stats_atg(LOWER(name));
         """)
         # Migrer eksisterende DB: legg til kolonner om de mangler
         for col, tbl, default in [
