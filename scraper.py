@@ -1,5 +1,5 @@
 """
-Scraper mot Rikstoto JSON-API og travsport.no HTML.
+Scraper mot Rikstoto JSON-API, travsport.no HTML og ATG (svensk) API.
 
 Rikstoto-endepunkter:
   - /api/results/racedays/{from}/{to}/list   → racedays i en periode
@@ -10,6 +10,14 @@ Travsport.no:
   - /sportsbasen/lopskalender/?year=Y&month=M → liste over stevner med resultater
   - /travbaner/{track-slug}/results/{date}    → resultatsider (HTML)
   Gir: bloddtype (kald/varm), distanse, tid, trener, odds – data rikstoto mangler.
+
+ATG (Aktiebolaget Trav och Galopp, Sverige):
+  - horse-betting-info.prod.c1.atg.cloud/api-public/v0/calendar/day/{date}
+      → alle loep med race-IDer for en dag
+  - horse-betting-info.prod.c1.atg.cloud/api-public/v0/races/{race_id}
+      → komplett loep med startere, resultater og heste-statistikk
+  Gir: heste-ID, alder, kjoenn, trekkmerker, livstidsinntekter, trener-statistikk,
+       personlige rekorder per underlag – data som ingen av de andre kildene har.
 """
 import datetime
 import re
@@ -40,7 +48,7 @@ COUNTRIES = {
     "FR": "Frankrike",
 }
 
-SOURCES = {"rikstoto": None, "travsport": None}
+SOURCES = {"rikstoto": None, "travsport": None, "atg": None}
 
 
 def _get(url: str) -> dict | None:
@@ -516,6 +524,227 @@ def fetch_travsport_results(
     return all_races if all_races else [{"error": "Ingen loep hentet fra travsport.no", "source": "travsport"}]
 
 
+# ── ATG (Sverige) ────────────────────────────────────────────────────────────
+
+ATG_BASE = "https://horse-betting-info.prod.c1.atg.cloud/api-public/v0"
+ATG_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept":  "application/json, */*",
+    "Referer": "https://www.atg.se/",
+    "Origin":  "https://www.atg.se",
+}
+
+# Hvilke land vi henter fra ATG (SE er kjerne, DK kan inkluderes)
+ATG_COUNTRIES = {"SE"}
+
+
+def _atg_get(url: str) -> dict | None:
+    try:
+        r = requests.get(url, headers=ATG_HEADERS, timeout=15)
+        r.raise_for_status()
+        return r.json()
+    except Exception:
+        return None
+
+
+def _atg_blood_type(race: dict) -> str:
+    """
+    Utleder bloddtype fra løpsnavn, termer og sport-kode.
+    ATG bruker 'kallblod' (kaldblod) i løpsnavn/termer for kaldblodshester.
+    """
+    sport = race.get("sport", "").lower()
+    if sport == "gallop":
+        return "galopp"
+
+    # Sjekk løpsnavn og termer for 'kallblod'
+    text = race.get("name", "") + " ".join(race.get("terms", []))
+    if re.search(r"kallblod", text, re.I):
+        return "kaldblod"
+
+    return "varmblod"
+
+
+def _atg_time_sec(time_dict: dict | None) -> float | None:
+    """Konverterer ATG time-dict {minutes, seconds, tenths} til sekunder."""
+    if not time_dict:
+        return None
+    try:
+        return (int(time_dict.get("minutes", 0)) * 60
+                + int(time_dict.get("seconds", 0))
+                + int(time_dict.get("tenths", 0)) / 10.0)
+    except (TypeError, ValueError):
+        return None
+
+
+def _atg_sport_to_race_type(sport: str) -> str:
+    mapping = {"trot": "trav", "gallop": "galopp", "monte": "monté"}
+    return mapping.get(sport.lower(), "trav")
+
+
+def _atg_position(finish_order: int | None, n_starters: int) -> int | None:
+    """
+    ATG bruker høye tall (38, 56) for diskvalifiserte/strøkne.
+    Behandler kun reelle plasseringer (1..n_starters) som gyldige.
+    """
+    if finish_order is None:
+        return None
+    if 1 <= finish_order <= n_starters:
+        return finish_order
+    return None   # disq / DNF / scratch
+
+
+def fetch_atg_race(race_id: str) -> dict | None:
+    """
+    Henter ett ATG-løp og returnerer et race-dict kompatibelt med _save_races.
+    race_id har format '{dato}_{bane_id}_{loepsnr}', f.eks. '2026-05-23_16_1'.
+    """
+    data = _atg_get(f"{ATG_BASE}/races/{race_id}")
+    if not data:
+        return None
+
+    date      = data.get("date", race_id[:10])
+    track     = data.get("track", {})
+    starts    = data.get("starts", [])
+    sport     = data.get("sport", "trot")
+    n         = len(starts)
+
+    results = []
+    for s in starts:
+        horse  = s.get("horse", {})
+        driver = s.get("driver", {})
+        res    = s.get("result", {})
+
+        # Navn
+        horse_name = horse.get("name", "")
+        if not horse_name:
+            continue
+
+        # Kusk
+        jockey = " ".join(filter(None, [
+            driver.get("firstName", ""),
+            driver.get("lastName", ""),
+        ])).strip()
+
+        # Trener
+        trainer_d = horse.get("trainer", {})
+        trainer = " ".join(filter(None, [
+            trainer_d.get("firstName", ""),
+            trainer_d.get("lastName", ""),
+        ])).strip()
+
+        # Plassering
+        position = _atg_position(res.get("finishOrder"), n)
+
+        # Tid: ATG gir ikke løpstid per hest, men best time fra statistikk
+        # Bruk hestens personlige rekord som referanse (ikke løpstid!)
+        time_sec = None   # ATG gir ikke faktisk løpstid per starter i dette endepunktet
+
+        # Scratched: ATG viser ikke strøkne i starterlisten
+        scratched = 0
+
+        # Individuelle handikap-meter (postPosition vs distance på løpet)
+        race_dist = data.get("distance")
+        start_dist = s.get("distance")
+        extra_dist = 0
+        if race_dist and start_dist and start_dist > race_dist:
+            extra_dist = start_dist - race_dist
+
+        results.append({
+            "horse_name":    horse_name,
+            "position":      position,
+            "start_pos":     s.get("number"),
+            "jockey":        jockey,
+            "trainer":       trainer,
+            "odds":          None,
+            "time_sec":      time_sec,
+            "scratched":     scratched,
+            "extra_distance": extra_dist,
+            "win_odds":      None,
+            "horse_reg_no":  str(horse.get("id")) if horse.get("id") else None,
+        })
+
+    if not results:
+        return None
+
+    return {
+        "source":     "atg",
+        "race_id":    f"atg_{race_id}",
+        "date":       date,
+        "track":      track.get("name", ""),
+        "distance":   data.get("distance"),
+        "surface":    "grus",
+        "race_type":  _atg_sport_to_race_type(sport),
+        "blood_type": _atg_blood_type(data),
+        "results":    results,
+    }
+
+
+def get_atg_race_ids(date: str, countries: set | None = None) -> list[str]:
+    """
+    Henter alle race-IDer med status 'results' for en dato fra ATG.
+    Filtrerer på land (default: kun SE).
+    """
+    if countries is None:
+        countries = ATG_COUNTRIES
+
+    data = _atg_get(f"{ATG_BASE}/calendar/day/{date}?headToHeadEnabled=true")
+    if not data:
+        return []
+
+    ids = []
+    for track in data.get("tracks", []):
+        country = track.get("countryCode", "")
+        if country not in countries:
+            continue
+        for race in track.get("races", []):
+            if race.get("status") == "results":
+                ids.append(race["id"])
+    return ids
+
+
+def fetch_atg_results(
+    date_from: str,
+    date_to: str | None = None,
+    countries: set | None = None,
+) -> list[dict]:
+    """
+    Henter alle ATG-resultater for en periode.
+    Standard: kun svenske løp (SE).
+    """
+    if date_to is None:
+        date_to = date_from
+    if countries is None:
+        countries = ATG_COUNTRIES
+
+    d_from = datetime.date.fromisoformat(date_from)
+    d_to   = datetime.date.fromisoformat(date_to)
+
+    all_races = []
+    cur = d_from
+    while cur <= d_to:
+        date_str = cur.isoformat()
+        race_ids = get_atg_race_ids(date_str, countries)
+
+        for rid in race_ids:
+            race = fetch_atg_race(rid)
+            if race:
+                all_races.append(race)
+            time.sleep(0.2)
+
+        if race_ids:
+            time.sleep(0.4)
+
+        cur += datetime.timedelta(days=1)
+
+    if not all_races:
+        return [{"error": f"Ingen ATG-resultater for {date_from}–{date_to}", "source": "atg"}]
+    return all_races
+
+
 # ── Felles fetch_all ──────────────────────────────────────────────────────────
 
 def fetch_all(
@@ -534,4 +763,8 @@ def fetch_all(
         result["rikstoto"] = fetch_rikstoto_results(date, countries)
     if "travsport" in sources:
         result["travsport"] = fetch_travsport_results(date, date)
+    if "atg" in sources:
+        # ATG bruker eget land-sett (SE som standard)
+        atg_countries = set(countries) & ATG_COUNTRIES if countries else ATG_COUNTRIES
+        result["atg"] = fetch_atg_results(date, date, atg_countries or ATG_COUNTRIES)
     return result

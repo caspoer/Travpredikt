@@ -208,6 +208,27 @@ def _bulk_worker(
                 })
             _log(f"🔍 Travsport {date_from} → {date_to}: {len(ts_metas)} stevner")
 
+        # ATG-løp (dag-for-dag via kalender-API)
+        if "atg" in sources:
+            with _bulk_lock:
+                _bulk_job["current"] = "Leser ATG-kalender…"
+            cur = datetime.date.fromisoformat(date_from)
+            end = datetime.date.fromisoformat(date_to)
+            atg_count = 0
+            while cur <= end:
+                race_ids = _scraper.get_atg_race_ids(cur.isoformat())
+                for rid in race_ids:
+                    all_tasks.append({
+                        "name": f"ATG {rid}",
+                        "date": cur.isoformat(),
+                        "type": "atg",
+                        "meta": {"race_id": rid},
+                    })
+                    atg_count += 1
+                cur += datetime.timedelta(days=1)
+                time.sleep(0.2)
+            _log(f"🔍 ATG {date_from} → {date_to}: {atg_count} løp")
+
         with _bulk_lock:
             _bulk_job["total"] = len(all_tasks)
         src_label = " + ".join(sources)
@@ -224,6 +245,9 @@ def _bulk_worker(
             try:
                 if task["type"] == "travsport":
                     races = _scraper.fetch_travsport_raceday(task["meta"])
+                elif task["type"] == "atg":
+                    race = _scraper.fetch_atg_race(task["meta"]["race_id"])
+                    races = [race] if race else []
                 else:
                     races = _scraper.fetch_raceday(task["meta"])
                 total_new = _save_races(races) if races else 0
