@@ -1,0 +1,31 @@
+# Database (inneholder persondata / treningsdata)
+hestedata.db
+
+# Modell-filer
+*.joblib
+horse_model_meta.json
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.suo
+*.user
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log

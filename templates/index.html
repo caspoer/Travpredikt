@@ -1,0 +1,1546 @@
+<!DOCTYPE html>
+<html lang="nb">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hesteløp Analyse & Prediksjon</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg:      #0f1117;
+    --surface: #1a1d27;
+    --card:    #222536;
+    --border:  #2e3250;
+    --accent:  #6c8eff;
+    --green:   #4caf7d;
+    --gold:    #f5c842;
+    --red:     #e05252;
+    --text:    #e8eaf6;
+    --muted:   #8891b5;
+    --radius:  10px;
+  }
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', system-ui, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+
+  /* Layout */
+  .sidebar { position: fixed; top: 0; left: 0; width: 220px; height: 100vh; background: var(--surface); border-right: 1px solid var(--border); display: flex; flex-direction: column; z-index: 100; }
+  .logo { padding: 20px 18px 16px; font-size: 1.1rem; font-weight: 700; color: var(--accent); border-bottom: 1px solid var(--border); }
+  .logo span { font-size: 0.7rem; font-weight: 400; color: var(--muted); display: block; margin-top: 2px; }
+  .nav { flex: 1; padding: 12px 0; overflow-y: auto; }
+  .nav-item { display: flex; align-items: center; gap: 10px; padding: 10px 18px; cursor: pointer; color: var(--muted); font-size: 0.9rem; transition: all .15s; }
+  .nav-item:hover, .nav-item.active { background: var(--card); color: var(--text); }
+  .nav-item.active { border-left: 3px solid var(--accent); }
+  .nav-icon { font-size: 1.1rem; width: 20px; text-align: center; }
+
+  .main { margin-left: 220px; padding: 28px; min-height: 100vh; }
+  .page { display: none; }
+  .page.active { display: block; }
+
+  /* Cards */
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; margin-bottom: 18px; }
+  .card-title { font-size: 0.85rem; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 14px; }
+
+  /* Stats row */
+  .stat-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 14px; margin-bottom: 22px; }
+  .stat-box { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; }
+  .stat-val { font-size: 2rem; font-weight: 700; color: var(--accent); }
+  .stat-lbl { font-size: 0.78rem; color: var(--muted); margin-top: 4px; }
+
+  /* Table */
+  table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+  th { text-align: left; padding: 8px 10px; color: var(--muted); font-weight: 600; font-size: 0.78rem; text-transform: uppercase; letter-spacing: .05em; border-bottom: 1px solid var(--border); }
+  td { padding: 9px 10px; border-bottom: 1px solid var(--border); }
+  tr:last-child td { border: none; }
+  tr:hover td { background: rgba(108,142,255,.06); }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 0.75rem; font-weight: 600; }
+  .badge-1 { background: rgba(245,200,66,.15); color: var(--gold); }
+  .badge-2 { background: rgba(180,180,200,.15); color: #b0b4c8; }
+  .badge-3 { background: rgba(195,120,60,.15); color: #c97a3c; }
+  .badge-n { background: rgba(100,100,130,.15); color: var(--muted); }
+  .badge-green { background: rgba(76,175,125,.15); color: var(--green); }
+  .badge-red { background: rgba(224,82,82,.15); color: var(--red); }
+  .badge-kald { background: rgba(80,160,255,.15); color: #5fbfff; }
+  .badge-varm { background: rgba(255,140,60,.15); color: #ff9f50; }
+  .badge-galopp { background: rgba(200,80,200,.15); color: #d96dd9; }
+
+  /* Filter tabs */
+  .tabs { display: flex; gap: 4px; margin-bottom: 18px; background: var(--surface); border-radius: 8px; padding: 4px; width: fit-content; }
+  .tab { padding: 7px 16px; border-radius: 6px; cursor: pointer; font-size: 0.85rem; font-weight: 600; color: var(--muted); transition: all .15s; border: none; background: none; }
+  .tab:hover { color: var(--text); }
+  .tab.active { background: var(--card); color: var(--text); box-shadow: 0 1px 4px rgba(0,0,0,.3); }
+
+  /* Blood type summary cards */
+  .bt-cards { display: grid; grid-template-columns: repeat(3,1fr); gap: 14px; margin-bottom: 22px; }
+  .bt-card { border-radius: var(--radius); padding: 16px; border: 1px solid var(--border); }
+  .bt-card.kald   { background: rgba(80,160,255,.07); border-color: rgba(80,160,255,.25); }
+  .bt-card.varm   { background: rgba(255,140,60,.07);  border-color: rgba(255,140,60,.25); }
+  .bt-card.galopp { background: rgba(200,80,200,.07);  border-color: rgba(200,80,200,.25); }
+  .bt-icon { font-size: 1.8rem; margin-bottom: 6px; }
+  .bt-label { font-weight: 700; font-size: 1rem; margin-bottom: 2px; }
+  .bt-sub { font-size: .8rem; color: var(--muted); }
+
+  /* Inputs & buttons */
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 16px; }
+  input, select { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; color: var(--text); padding: 8px 12px; font-size: 0.88rem; outline: none; }
+  input:focus, select:focus { border-color: var(--accent); }
+  button { background: var(--accent); color: #fff; border: none; border-radius: 6px; padding: 8px 18px; font-size: 0.88rem; font-weight: 600; cursor: pointer; transition: opacity .15s; }
+  button:hover { opacity: .85; }
+  button.secondary { background: var(--card); border: 1px solid var(--border); color: var(--text); }
+  button.danger { background: var(--red); }
+
+  /* Predict */
+  .horse-tag { display: inline-flex; align-items: center; gap: 6px; background: var(--surface); border: 1px solid var(--border); border-radius: 20px; padding: 4px 10px 4px 14px; font-size: 0.85rem; }
+  .horse-tag button { background: none; color: var(--muted); padding: 0 2px; font-size: 1rem; line-height: 1; }
+  #horse-tags { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+  .prob-bar { background: var(--surface); border-radius: 4px; height: 8px; overflow: hidden; margin-top: 4px; }
+  .prob-fill { height: 100%; border-radius: 4px; background: linear-gradient(90deg, var(--accent), var(--green)); }
+  .rank-1 { background: linear-gradient(90deg, var(--gold), #f5a842); }
+  .rank-num { width: 28px; height: 28px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-weight: 700; font-size: 0.85rem; background: var(--surface); }
+
+  /* Chart wrapper */
+  .chart-wrap { position: relative; height: 260px; }
+
+  /* Loader */
+  .loader { text-align: center; padding: 40px; color: var(--muted); }
+  .spinner { display: inline-block; width: 32px; height: 32px; border: 3px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; margin-bottom: 10px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* Toast */
+  #toast { position: fixed; bottom: 24px; right: 24px; background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 12px 18px; font-size: 0.88rem; opacity: 0; transform: translateY(10px); transition: all .3s; pointer-events: none; z-index: 999; }
+  #toast.show { opacity: 1; transform: translateY(0); }
+
+  .search-box { position: relative; }
+  .autocomplete { position: absolute; top: 100%; left: 0; right: 0; background: var(--card); border: 1px solid var(--border); border-radius: 6px; z-index: 50; max-height: 200px; overflow-y: auto; }
+  .ac-item { padding: 8px 12px; cursor: pointer; font-size: 0.88rem; }
+  .ac-item:hover { background: var(--surface); }
+
+  h1 { font-size: 1.5rem; margin-bottom: 6px; }
+  .subtitle { color: var(--muted); font-size: 0.88rem; margin-bottom: 22px; }
+</style>
+</head>
+<body>
+
+<nav class="sidebar">
+  <div class="logo">🏇 HesteTips<span>Analyse & Prediksjon</span></div>
+  <div class="nav">
+    <div class="nav-item active" data-page="dashboard">  <span class="nav-icon">📊</span> Dashboard</div>
+    <div class="nav-item" data-page="races">             <span class="nav-icon">🏁</span> Løpsresultater</div>
+    <div class="nav-item" data-page="predict">           <span class="nav-icon">🎯</span> Prediksjon</div>
+    <div class="nav-item" data-page="leaderboard">       <span class="nav-icon">🏆</span> Toppliste</div>
+    <div class="nav-item" data-page="horses">            <span class="nav-icon">📋</span> Hesteliste</div>
+    <div class="nav-item" data-page="horse">             <span class="nav-icon">🐎</span> Hesteanalyse</div>
+    <div class="nav-item" data-page="merge">             <span class="nav-icon">🔗</span> Heste-profiler</div>
+    <div class="nav-item" data-page="fetch">             <span class="nav-icon">🌐</span> Hent data</div>
+  </div>
+</nav>
+
+<main class="main">
+
+  <!-- DASHBOARD -->
+  <div class="page active" id="page-dashboard">
+    <h1>Dashboard</h1>
+    <p class="subtitle">Oversikt over hentet data og statistikk</p>
+    <div class="stat-grid">
+      <div class="stat-box"><div class="stat-val" id="ov-races">–</div><div class="stat-lbl">Totalt antall løp</div></div>
+      <div class="stat-box"><div class="stat-val" id="ov-results">–</div><div class="stat-lbl">Resultater registrert</div></div>
+      <div class="stat-box"><div class="stat-val" id="ov-horses">–</div><div class="stat-lbl">Unike hester</div></div>
+      <div class="stat-box"><div class="stat-val" id="ov-latest">–</div><div class="stat-lbl">Siste dato</div></div>
+    </div>
+    <div class="bt-cards" id="bt-summary"></div>
+    <div class="tabs">
+      <button class="tab active" data-bt="alle"     onclick="setDashTab(this)">Alle</button>
+      <button class="tab"        data-bt="kaldblod" onclick="setDashTab(this)">❄️ Kaldblod</button>
+      <button class="tab"        data-bt="varmblod" onclick="setDashTab(this)">🔥 Varmblod</button>
+      <button class="tab"        data-bt="galopp"   onclick="setDashTab(this)">💨 Galopp</button>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:18px">
+      <div class="card">
+        <div class="card-title" id="chart-win-title">Vinnerprosent – Topp 10</div>
+        <div class="chart-wrap"><canvas id="chart-winpct"></canvas></div>
+      </div>
+      <div class="card">
+        <div class="card-title" id="chart-top-title">Topp-3% – Topp 10</div>
+        <div class="chart-wrap"><canvas id="chart-top3"></canvas></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- LØPSRESULTATER -->
+  <div class="page" id="page-races">
+    <h1>Løpsresultater</h1>
+    <p class="subtitle">Klikk på et løp for å se alle startende hester</p>
+    <div class="tabs">
+      <button class="tab active" data-bt="alle"     onclick="setRacesTab(this)">Alle</button>
+      <button class="tab"        data-bt="kaldblod" onclick="setRacesTab(this)">❄️ Kaldblod</button>
+      <button class="tab"        data-bt="varmblod" onclick="setRacesTab(this)">🔥 Varmblod</button>
+      <button class="tab"        data-bt="galopp"   onclick="setRacesTab(this)">💨 Galopp</button>
+    </div>
+    <div class="card">
+      <table>
+        <thead><tr><th>Dato</th><th>Type</th><th>Bane</th><th>Distanse</th><th>Startere</th><th>Kilde</th></tr></thead>
+        <tbody id="races-body"><tr><td colspan="6" class="loader">Laster…</td></tr></tbody>
+      </table>
+    </div>
+    <div class="card" id="race-detail-card" style="display:none">
+      <div class="card-title" id="race-detail-title">Løpsdetaljer</div>
+      <table>
+        <thead><tr><th>Pl.</th><th>Hest</th><th>Jockey</th><th>Trener</th><th>Odds</th><th>Tid</th></tr></thead>
+        <tbody id="race-detail-body"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- PREDIKSJON -->
+  <div class="page" id="page-predict">
+    <h1>Prediksjon</h1>
+    <p class="subtitle">Lim inn en startliste eller legg til hester manuelt</p>
+
+    <!-- Lim inn startliste -->
+    <div class="card">
+      <div class="card-title">📋 Lim inn startliste</div>
+      <p style="color:var(--muted);font-size:.83rem;margin-bottom:12px">
+        Støtter rikstoto.no-format, V75/V65-lister, nummererte lister og enkel linje-for-linje tekst.
+      </p>
+      <textarea id="paste-area" rows="10" placeholder="Lim inn startliste her, f.eks.:
+1. Gausdal Brage           Lars Hansen      4,0
+2. Peer Gynt               Vidar Hop        6,5
+3. Fjord Hauk              Tom Erik Solberg 9,0
+4. Heidal Blesen           Øystein Tjomsland 12,0
+
+– eller bare ett hestenavn per linje –
+
+Gausdal Brage
+Peer Gynt
+Fjord Hauk" style="width:100%;background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--text);padding:12px;font-family:monospace;font-size:.85rem;resize:vertical;outline:none"></textarea>
+      <div style="display:flex;gap:10px;margin-top:12px;align-items:center;flex-wrap:wrap">
+        <button onclick="parseAndPredict()">🔍 Tolk &amp; forutsi</button>
+        <button class="secondary" onclick="document.getElementById('paste-area').value=''">Tøm</button>
+        <span style="color:var(--muted);font-size:.82rem">Bloddtype:&nbsp;</span>
+        <select id="paste-bt" style="width:140px">
+          <option value="">Gjett automatisk</option>
+          <option value="kaldblod">❄️ Kaldblod</option>
+          <option value="varmblod">🔥 Varmblod</option>
+          <option value="galopp">💨 Galopp</option>
+        </select>
+      </div>
+      <div id="parse-preview" style="margin-top:14px"></div>
+    </div>
+
+    <!-- Manuell søk -->
+    <div class="card">
+      <div class="card-title">🔎 Legg til hester manuelt</div>
+      <div class="row">
+        <div class="search-box">
+          <input type="text" id="horse-input" placeholder="Søk etter hest…" autocomplete="off" style="width:240px">
+          <div class="autocomplete" id="ac-list" style="display:none"></div>
+        </div>
+        <button onclick="addHorse()">Legg til</button>
+        <button class="secondary" onclick="clearHorses()">Tøm</button>
+      </div>
+      <div id="horse-tags"></div>
+      <button onclick="runPredict()" id="btn-predict" style="display:none">🎯 Forutsi vinner</button>
+    </div>
+
+    <div class="card" id="predict-result" style="display:none">
+      <div class="card-title" id="predict-title">Rangering &amp; sannsynligheter</div>
+      <div id="predict-rows"></div>
+    </div>
+  </div>
+
+  <!-- TOPPLISTE -->
+  <div class="page" id="page-leaderboard">
+    <h1>Toppliste</h1>
+    <p class="subtitle">Hester rangert etter antall seire – filtrer per bloddtype</p>
+    <div class="tabs">
+      <button class="tab active" data-bt="alle"     onclick="setLbTab(this)">Alle</button>
+      <button class="tab"        data-bt="kaldblod" onclick="setLbTab(this)">❄️ Kaldblod</button>
+      <button class="tab"        data-bt="varmblod" onclick="setLbTab(this)">🔥 Varmblod</button>
+      <button class="tab"        data-bt="galopp"   onclick="setLbTab(this)">💨 Galopp</button>
+    </div>
+    <div class="card">
+      <table>
+        <thead><tr><th>#</th><th>Hest</th><th>Type</th><th>Løp</th><th>Seire</th><th>Vinn%</th><th>Topp-3</th><th>Topp-3%</th><th>PR</th></tr></thead>
+        <tbody id="lb-body"><tr><td colspan="9" class="loader">Laster…</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- HESTELISTE -->
+  <div class="page" id="page-horses">
+    <h1>Hesteliste</h1>
+    <p class="subtitle">Alle hester i databasen – søk, filtrer og klikk for detaljert analyse</p>
+
+    <div class="card" style="padding:14px 20px">
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+        <input type="text" id="horses-search" placeholder="🔍 Søk hestenavn…"
+               style="width:220px" oninput="debounceHorses()" autocomplete="off">
+        <select id="horses-bt" onchange="loadHorses(1)" style="width:150px">
+          <option value="">Alle bloddtyper</option>
+          <option value="kaldblod">❄️ Kaldblod</option>
+          <option value="varmblod">🔥 Varmblod</option>
+          <option value="galopp">💨 Galopp</option>
+        </select>
+        <select id="horses-sort" onchange="loadHorses(1)" style="width:160px">
+          <option value="wins">Flest seire</option>
+          <option value="races">Flest løp</option>
+          <option value="win_pct">Høyest vinn%</option>
+          <option value="top3_pct">Høyest topp-3%</option>
+          <option value="name">Navn A–Å</option>
+        </select>
+        <span id="horses-count" style="color:var(--muted);font-size:.82rem;margin-left:auto"></span>
+      </div>
+    </div>
+
+    <div class="card" style="padding:0">
+      <table id="horses-table">
+        <thead>
+          <tr>
+            <th style="padding:10px 14px">#</th>
+            <th>Hest</th>
+            <th>Type</th>
+            <th>Løp</th>
+            <th>Seire</th>
+            <th>Vinn%</th>
+            <th>Topp-3%</th>
+            <th>PR</th>
+            <th>Siste løp</th>
+          </tr>
+        </thead>
+        <tbody id="horses-body">
+          <tr><td colspan="9"><div class="loader"><div class="spinner"></div></div></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div style="display:flex;justify-content:center;gap:8px;margin-top:16px" id="horses-pagination"></div>
+  </div>
+
+  <!-- HESTEANALYSE -->
+  <div class="page" id="page-horse">
+    <h1>Hesteanalyse</h1>
+    <p class="subtitle">Detaljert statistikk for én hest</p>
+    <div class="card">
+      <div class="row">
+        <div class="search-box">
+          <input type="text" id="horse-search" placeholder="Navn på hest…" autocomplete="off" style="width:240px">
+          <div class="autocomplete" id="ac-horse" style="display:none"></div>
+        </div>
+        <button onclick="lookupHorse()">Analyser</button>
+      </div>
+    </div>
+    <div id="horse-result"></div>
+  </div>
+
+  <!-- HESTE-PROFILER / SAMMENSLÅING -->
+  <div class="page" id="page-merge">
+    <h1>Heste-profiler</h1>
+    <p class="subtitle">Slå sammen hester som er registrert med litt ulike navn (f.eks. norsk vs. svensk stavemåte)</p>
+
+    <!-- Manuell sammenslåing -->
+    <div class="card">
+      <div class="card-title">✏️ Slå sammen to navn manuelt</div>
+      <p style="color:var(--muted);font-size:.83rem;margin-bottom:14px">
+        Etter sammenslåing vil <em>alias-navn</em> bli behandlet som <em>kanonisk navn</em> i alle analyser og lister.
+      </p>
+      <div class="row" style="flex-wrap:wrap;gap:10px;align-items:flex-end">
+        <div>
+          <label style="font-size:.8rem;color:var(--muted);display:block;margin-bottom:4px">Alias-navn (det som skal skjules)</label>
+          <div class="search-box">
+            <input type="text" id="merge-alias" placeholder="F.eks. Fjord Hauk SE" autocomplete="off" style="width:240px">
+            <div class="autocomplete" id="ac-merge-alias" style="display:none"></div>
+          </div>
+        </div>
+        <div style="padding-bottom:2px;color:var(--muted);font-size:1.2rem">→</div>
+        <div>
+          <label style="font-size:.8rem;color:var(--muted);display:block;margin-bottom:4px">Kanonisk navn (det som beholdes)</label>
+          <div class="search-box">
+            <input type="text" id="merge-canonical" placeholder="F.eks. Fjord Hauk" autocomplete="off" style="width:240px">
+            <div class="autocomplete" id="ac-merge-canonical" style="display:none"></div>
+          </div>
+        </div>
+        <button onclick="doMerge()">🔗 Slå sammen</button>
+      </div>
+      <div id="merge-status" style="margin-top:12px;font-size:.85rem"></div>
+    </div>
+
+    <!-- Foreslåtte duplikater -->
+    <div class="card">
+      <div class="card-title">🔍 Mulige duplikater (automatisk oppdaget)</div>
+      <p style="color:var(--muted);font-size:.83rem;margin-bottom:14px">
+        Hester med lignende navn som har konkurrert på samme dato med samme plassering.
+        Klikk «Slå sammen» for å slå dem sammen (alias → kanonisk).
+      </p>
+      <div id="dupes-body">
+        <div class="loader"><div class="spinner"></div></div>
+      </div>
+    </div>
+
+    <!-- Aktive aliaser -->
+    <div class="card">
+      <div class="card-title">📋 Registrerte sammenslåinger</div>
+      <div id="aliases-body">
+        <div class="loader"><div class="spinner"></div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- HENT DATA -->
+  <div class="page" id="page-fetch">
+    <h1>Hent data fra rikstoto.no</h1>
+    <p class="subtitle">Henter løpsresultater via Rikstoto JSON-API – støtter Norge, Sverige, Danmark og Finland</p>
+
+    <!-- Én dag -->
+    <div class="card">
+      <div class="card-title">📅 Hent én dag</div>
+      <div class="row">
+        <label>Dato:</label>
+        <input type="date" id="fetch-date">
+      </div>
+      <div style="margin-bottom:10px">
+        <div style="font-size:.83rem;color:var(--muted);margin-bottom:8px">Kilde:</div>
+        <div class="row" style="flex-wrap:wrap;gap:14px;margin-bottom:0">
+          <label><input type="checkbox" class="fetch-src-cb" value="rikstoto" checked> 🏇 rikstoto.no <span style="font-size:.75rem;color:var(--muted)">(API)</span></label>
+          <label><input type="checkbox" class="fetch-src-cb" value="travsport"> 📋 travsport.no <span style="font-size:.75rem;color:var(--muted)">(tid + distanse)</span></label>
+        </div>
+      </div>
+      <div style="margin-bottom:14px" id="fetch-countries-wrap">
+        <div style="font-size:.83rem;color:var(--muted);margin-bottom:8px">Land (rikstoto):</div>
+        <div class="row" style="flex-wrap:wrap;gap:14px;margin-bottom:0">
+          <label><input type="checkbox" class="fetch-country-cb" value="NO" checked> 🇳🇴 Norge</label>
+          <label><input type="checkbox" class="fetch-country-cb" value="SE" checked> 🇸🇪 Sverige</label>
+          <label><input type="checkbox" class="fetch-country-cb" value="DK"> 🇩🇰 Danmark</label>
+          <label><input type="checkbox" class="fetch-country-cb" value="FI"> 🇫🇮 Finland</label>
+        </div>
+      </div>
+      <button onclick="fetchData()">🌐 Hent resultater</button>
+      <div id="fetch-status" style="margin-top:14px;color:var(--muted);font-size:.88rem"></div>
+    </div>
+
+    <!-- Historisk bulk -->
+    <div class="card">
+      <div class="card-title">📆 Hent historiske resultater (bulk)</div>
+      <p style="color:var(--muted);font-size:.83rem;margin-bottom:16px">
+        Henter alle stevner (racedays) i perioden via Rikstoto-APIet – én batch per 30 dager.
+        Støtter NO, SE, DK og FI. Med 1 s forsinkelse tar 1 år ca. 3–6 min. Du kan stoppe når som helst.
+      </p>
+      <div class="row" style="flex-wrap:wrap;gap:16px;align-items:center">
+        <div>
+          <label style="font-size:.83rem;color:var(--muted);display:block;margin-bottom:4px">Antall dager bakover</label>
+          <select id="bulk-days" style="width:160px">
+            <option value="30">30 dager (1 mnd)</option>
+            <option value="90">90 dager (3 mnd)</option>
+            <option value="180">180 dager (6 mnd)</option>
+            <option value="365" selected>365 dager (1 år)</option>
+            <option value="730">730 dager (2 år)</option>
+          </select>
+        </div>
+        <div>
+          <label style="font-size:.83rem;color:var(--muted);display:block;margin-bottom:4px">Forsinkelse per stevne</label>
+          <select id="bulk-delay" style="width:160px">
+            <option value="0.5">0.5 s (raskere)</option>
+            <option value="1.0" selected>1.0 s (anbefalt)</option>
+            <option value="2.0">2.0 s (skånsom)</option>
+          </select>
+        </div>
+      </div>
+      <div style="margin-bottom:10px">
+        <div style="font-size:.83rem;color:var(--muted);margin-bottom:8px">Kilde:</div>
+        <div class="row" style="flex-wrap:wrap;gap:14px;margin-bottom:0">
+          <label><input type="checkbox" class="bulk-src-cb" value="rikstoto" checked> 🏇 rikstoto.no <span style="font-size:.75rem;color:var(--muted)">(NO/SE/DK/FI via API)</span></label>
+          <label><input type="checkbox" class="bulk-src-cb" value="travsport"> 📋 travsport.no <span style="font-size:.75rem;color:var(--muted)">(norsk trav – tid + distanse)</span></label>
+        </div>
+      </div>
+      <div style="margin-bottom:18px" id="bulk-countries-wrap">
+        <div style="font-size:.83rem;color:var(--muted);margin-bottom:8px">Land (rikstoto):</div>
+        <div class="row" style="flex-wrap:wrap;gap:14px;margin-bottom:0">
+          <label><input type="checkbox" class="bulk-country-cb" value="NO" checked> 🇳🇴 Norge</label>
+          <label><input type="checkbox" class="bulk-country-cb" value="SE" checked> 🇸🇪 Sverige</label>
+          <label><input type="checkbox" class="bulk-country-cb" value="DK"> 🇩🇰 Danmark</label>
+          <label><input type="checkbox" class="bulk-country-cb" value="FI"> 🇫🇮 Finland</label>
+        </div>
+      </div>
+      <div style="display:flex;gap:10px">
+        <button id="bulk-start-btn" onclick="startBulk()">🚀 Start historisk henting</button>
+        <button id="bulk-stop-btn"  onclick="stopBulk()" class="danger" style="display:none">⛔ Stopp</button>
+      </div>
+
+      <!-- Fremdrift -->
+      <div id="bulk-progress" style="display:none;margin-top:20px">
+        <div style="display:flex;justify-content:space-between;font-size:.83rem;margin-bottom:6px">
+          <span id="bulk-pct-label">0%</span>
+          <span id="bulk-count-label">0 / 0 racedays</span>
+        </div>
+        <div style="background:var(--surface);border-radius:6px;height:10px;overflow:hidden;margin-bottom:12px">
+          <div id="bulk-bar" style="height:100%;background:linear-gradient(90deg,var(--accent),var(--green));width:0%;transition:width .4s;border-radius:6px"></div>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:14px">
+          <div style="background:var(--surface);padding:10px;border-radius:8px;text-align:center">
+            <div style="font-size:1.3rem;font-weight:700;color:var(--green)" id="bulk-fetched">0</div>
+            <div style="font-size:.75rem;color:var(--muted)">Nye løp</div>
+          </div>
+          <div style="background:var(--surface);padding:10px;border-radius:8px;text-align:center">
+            <div style="font-size:1.3rem;font-weight:700;color:var(--accent)" id="bulk-done">0</div>
+            <div style="font-size:.75rem;color:var(--muted)">Stevner ferdig</div>
+          </div>
+          <div style="background:var(--surface);padding:10px;border-radius:8px;text-align:center">
+            <div style="font-size:1.3rem;font-weight:700;color:var(--muted)" id="bulk-skipped">0</div>
+            <div style="font-size:.75rem;color:var(--muted)">Tomme dager</div>
+          </div>
+          <div style="background:var(--surface);padding:10px;border-radius:8px;text-align:center">
+            <div style="font-size:1.3rem;font-weight:700;color:var(--red)" id="bulk-errors">0</div>
+            <div style="font-size:.75rem;color:var(--muted)">Feil</div>
+          </div>
+        </div>
+        <div style="font-size:.8rem;color:var(--muted);margin-bottom:6px">Behandler: <span id="bulk-current" style="color:var(--text)">–</span></div>
+        <div id="bulk-log" style="background:var(--surface);border-radius:6px;padding:10px;max-height:180px;overflow-y:auto;font-size:.78rem;font-family:monospace;color:var(--muted)"></div>
+      </div>
+    </div>
+
+    <!-- ML-modell -->
+    <div class="card">
+      <div class="card-title">🧠 Maskinlæringsmodell (AI-prediksjon)</div>
+      <p style="color:var(--muted);font-size:.85rem;margin-bottom:16px">
+        Tren en <strong style="color:var(--text)">GradientBoostingClassifier</strong> på alle løp i databasen.
+        Modellen lærer å rangere hester basert på historisk vinnerstatistikk, form, jockey-kvalitet
+        og hestens styrke relativt til de andre i feltet. Jo mer data, desto bedre.
+      </p>
+      <div id="ml-status-area" style="margin-bottom:16px">
+        <div style="color:var(--muted);font-size:.85rem">Laster modellstatus…</div>
+      </div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap">
+        <button id="ml-train-btn" onclick="trainML()">🧠 Tren modell nå</button>
+        <button class="secondary" onclick="checkMLStatus()">🔄 Oppdater status</button>
+      </div>
+      <div id="ml-progress" style="display:none;margin-top:16px">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+          <div class="spinner" style="width:18px;height:18px;border-width:2px;display:inline-block;flex-shrink:0"></div>
+          <span style="color:var(--muted);font-size:.88rem">Trener modell…</span>
+        </div>
+        <div id="ml-log" style="background:var(--surface);border-radius:6px;padding:10px;max-height:160px;overflow-y:auto;font-size:.78rem;font-family:monospace;color:var(--muted)"></div>
+      </div>
+    </div>
+
+    <!-- Demo-data -->
+    <div class="card">
+      <div class="card-title">🧪 Generer demo-data (uten internett)</div>
+      <p style="color:var(--muted);font-size:.85rem;margin-bottom:12px">
+        Fyller databasen med fiktive norske trav- og galoppresultater for testing.
+      </p>
+      <div class="row" style="align-items:center">
+        <select id="demo-days" style="width:180px">
+          <option value="90">90 dager (3 mnd)</option>
+          <option value="365" selected>365 dager (1 år)</option>
+          <option value="730">730 dager (2 år)</option>
+        </select>
+        <button class="secondary" onclick="loadDemo()">📦 Last inn demo-data</button>
+      </div>
+      <div id="demo-status" style="margin-top:10px;font-size:.85rem;color:var(--muted)"></div>
+    </div>
+  </div>
+
+</main>
+
+<div id="toast"></div>
+
+<script>
+/* ── Navigation ───────────────────────────────────────────────────────────── */
+document.querySelectorAll('.nav-item').forEach(el => {
+  el.addEventListener('click', () => {
+    document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+    document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+    el.classList.add('active');
+    document.getElementById('page-' + el.dataset.page).classList.add('active');
+    onPageLoad(el.dataset.page);
+  });
+});
+
+function onPageLoad(page) {
+  if (page === 'dashboard')   loadDashboard();
+  if (page === 'races')       loadRaces();
+  if (page === 'leaderboard') loadLeaderboard();
+  if (page === 'horses')      loadHorses(1);
+  if (page === 'merge')       loadMergePage();
+  if (page === 'fetch')       checkMLStatus();
+}
+
+/* ── Toast ────────────────────────────────────────────────────────────────── */
+function toast(msg, ok=true) {
+  const t = document.getElementById('toast');
+  t.textContent = (ok ? '✅ ' : '❌ ') + msg;
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 3000);
+}
+
+/* ── API ──────────────────────────────────────────────────────────────────── */
+const API_BASE = 'http://localhost:5000';
+async function api(path, opts) {
+  const url = path.startsWith('http') ? path : API_BASE + path;
+  const r = await fetch(url, opts);
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+/* ── Helpers ──────────────────────────────────────────────────────────────── */
+function fmtTime(sec) {
+  const m = Math.floor(sec / 60);
+  const s = (sec % 60).toFixed(1).padStart(4, '0');
+  return `${m}:${s}`;
+}
+
+// Formater km-tid (sek/km) → "1:14,3" (minutter:sekunder,tideler)
+function fmtKmTime(secPerKm) {
+  const m = Math.floor(secPerKm / 60);
+  const s = (secPerKm % 60).toFixed(1).padStart(4, '0');
+  return `${m}:${s.replace('.', ',')}`;
+}
+
+const BT_META = {
+  kaldblod: { label: '❄️ Kaldblod',  cls: 'badge-kald',   cardCls: 'kald',   icon: '❄️' },
+  varmblod: { label: '🔥 Varmblod',  cls: 'badge-varm',   cardCls: 'varm',   icon: '🔥' },
+  galopp:   { label: '💨 Galopp',    cls: 'badge-galopp', cardCls: 'galopp', icon: '💨' },
+};
+function btBadge(bt) {
+  const m = BT_META[bt] || { label: bt, cls: 'badge-green' };
+  return `<span class="badge ${m.cls}">${m.label}</span>`;
+}
+
+function setTab(container, btn, callback) {
+  container.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  btn.classList.add('active');
+  callback(btn.dataset.bt);
+}
+
+/* ── Dashboard ────────────────────────────────────────────────────────────── */
+let chartWin = null, chartTop = null;
+let dashBt = 'alle';
+
+function setDashTab(btn) {
+  setTab(btn.closest('.tabs'), btn, bt => { dashBt = bt; refreshDashCharts(); });
+}
+
+async function loadDashboard() {
+  try {
+    const [ov, btStats] = await Promise.all([
+      api('/api/stats/overview'),
+      api('/api/stats/bloodtype'),
+    ]);
+    document.getElementById('ov-races').textContent   = ov.total_races   ?? '–';
+    document.getElementById('ov-results').textContent = ov.total_results ?? '–';
+    document.getElementById('ov-horses').textContent  = ov.unique_horses ?? '–';
+    document.getElementById('ov-latest').textContent  = ov.latest_date   ?? '–';
+
+    const btMap = Object.fromEntries(btStats.map(r => [r.blood_type, r]));
+    document.getElementById('bt-summary').innerHTML = ['kaldblod','varmblod','galopp'].map(bt => {
+      const m = BT_META[bt];
+      const d = btMap[bt] || { races: 0, horses: 0 };
+      return `<div class="bt-card ${m.cardCls}">
+        <div class="bt-icon">${m.icon}</div>
+        <div class="bt-label">${m.label.replace(/^.. /,'')}</div>
+        <div class="bt-sub">${d.races} løp · ${d.horses} hester</div>
+      </div>`;
+    }).join('');
+  } catch(e) { console.error(e); }
+  refreshDashCharts();
+}
+
+async function refreshDashCharts() {
+  try {
+    const qs = dashBt !== 'alle' ? `?blood_type=${dashBt}&limit=10` : '?limit=10';
+    const lb = await api('/api/leaderboard' + qs);
+    const labels = lb.map(h => h.horse_name.split(' ').slice(-1)[0]);
+    const winPct = lb.map(h => h.races > 0 ? +(h.wins/h.races*100).toFixed(1) : 0);
+    const t3Pct  = lb.map(h => h.races > 0 ? +(h.top3/h.races*100).toFixed(1) : 0);
+    const suffix = dashBt !== 'alle' ? ` (${BT_META[dashBt]?.label ?? dashBt})` : '';
+    document.getElementById('chart-win-title').textContent = 'Vinnerprosent – Topp 10' + suffix;
+    document.getElementById('chart-top-title').textContent = 'Topp-3% – Topp 10' + suffix;
+
+    const cfg = (label, data, color) => ({
+      type: 'bar',
+      data: { labels, datasets: [{ label, data, backgroundColor: color, borderRadius: 4 }] },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { ticks: { color: '#8891b5', font: { size: 10 } }, grid: { color: '#2e3250' } },
+          y: { ticks: { color: '#8891b5' }, grid: { color: '#2e3250' } }
+        }
+      }
+    });
+    if (chartWin) chartWin.destroy();
+    if (chartTop) chartTop.destroy();
+    chartWin = new Chart(document.getElementById('chart-winpct'), cfg('Vinn%',   winPct, 'rgba(245,200,66,.75)'));
+    chartTop = new Chart(document.getElementById('chart-top3'),   cfg('Topp-3%', t3Pct,  'rgba(108,142,255,.75)'));
+  } catch(e) { console.error(e); }
+}
+
+/* ── Races ────────────────────────────────────────────────────────────────── */
+let racesBt = 'alle';
+
+function setRacesTab(btn) {
+  setTab(btn.closest('.tabs'), btn, bt => { racesBt = bt; loadRaces(); });
+}
+
+async function loadRaces() {
+  const body = document.getElementById('races-body');
+  body.innerHTML = '<tr><td colspan="6"><div class="loader"><div class="spinner"></div><div>Laster løp…</div></div></td></tr>';
+  document.getElementById('race-detail-card').style.display = 'none';
+  try {
+    const qs = racesBt !== 'alle' ? `?blood_type=${racesBt}` : '';
+    const races = await api('/api/races' + qs);
+    if (!races.length) {
+      body.innerHTML = '<tr><td colspan="6" style="color:var(--muted);padding:20px">Ingen løp funnet.</td></tr>';
+      return;
+    }
+    body.innerHTML = races.map(r => `
+      <tr onclick="loadRaceDetail('${r.race_id}')" style="cursor:pointer">
+        <td>${r.date ?? '–'}</td>
+        <td>${btBadge(r.blood_type)}</td>
+        <td>${r.track ?? '–'}</td>
+        <td>${r.distance ? r.distance+'m' : '–'}</td>
+        <td>${r.starters ?? '–'}</td>
+        <td><span class="badge badge-green">${r.source ?? '–'}</span></td>
+      </tr>`).join('');
+  } catch(e) {
+    body.innerHTML = `<tr><td colspan="6" style="color:var(--red)">Feil: ${e.message}</td></tr>`;
+  }
+}
+
+async function loadRaceDetail(raceId) {
+  const card  = document.getElementById('race-detail-card');
+  const title = document.getElementById('race-detail-title');
+  const body  = document.getElementById('race-detail-body');
+  card.style.display = 'block';
+  card.scrollIntoView({ behavior: 'smooth' });
+  body.innerHTML = '<tr><td colspan="6">Laster…</td></tr>';
+  try {
+    const d = await api('/api/race/' + encodeURIComponent(raceId));
+    const bt = d.race.blood_type ?? '';
+    title.innerHTML = `${d.race.track} – ${d.race.date} – ${d.race.distance ?? '?'}m &nbsp;${btBadge(bt)}`;
+    body.innerHTML = d.starters.map(s => {
+      const pos = s.position;
+      const bc  = pos === 1 ? 'badge-1' : pos === 2 ? 'badge-2' : pos === 3 ? 'badge-3' : 'badge-n';
+      return `<tr>
+        <td><span class="badge ${bc}">${pos ?? '–'}</span></td>
+        <td><strong>${s.horse_name}</strong></td>
+        <td>${s.jockey ?? '–'}</td>
+        <td>${s.trainer ?? '–'}</td>
+        <td>${s.odds ? s.odds+'x' : '–'}</td>
+        <td>${s.time_sec ? fmtTime(s.time_sec) : '–'}</td>
+      </tr>`;
+    }).join('');
+  } catch(e) {
+    body.innerHTML = `<tr><td colspan="6" style="color:var(--red)">${e.message}</td></tr>`;
+  }
+}
+
+/* ── Leaderboard ──────────────────────────────────────────────────────────── */
+let lbBt = 'alle';
+
+function setLbTab(btn) {
+  setTab(btn.closest('.tabs'), btn, bt => { lbBt = bt; loadLeaderboard(); });
+}
+
+async function loadLeaderboard() {
+  const body = document.getElementById('lb-body');
+  body.innerHTML = '<tr><td colspan="9"><div class="loader"><div class="spinner"></div><div>Laster…</div></div></td></tr>';
+  try {
+    const qs = lbBt !== 'alle' ? `?blood_type=${lbBt}&limit=30` : '?limit=30';
+    const lb = await api('/api/leaderboard' + qs);
+    if (!lb.length) {
+      body.innerHTML = '<tr><td colspan="9" style="color:var(--muted);padding:20px">Ingen data.</td></tr>';
+      return;
+    }
+    body.innerHTML = lb.map((h, i) => {
+      const wp  = h.races > 0 ? (h.wins/h.races*100).toFixed(1) : 0;
+      const t3p = h.races > 0 ? (h.top3/h.races*100).toFixed(1) : 0;
+      return `<tr>
+        <td style="color:var(--muted)">${i+1}</td>
+        <td><strong>${h.horse_name}</strong></td>
+        <td>${btBadge(h.blood_type)}</td>
+        <td>${h.races}</td>
+        <td><span class="badge badge-1">${h.wins}</span></td>
+        <td>${wp}%</td>
+        <td>${h.top3}</td>
+        <td>${t3p}%</td>
+        <td>${h.best_time ? fmtTime(h.best_time) : '–'}</td>
+      </tr>`;
+    }).join('');
+  } catch(e) {
+    body.innerHTML = `<tr><td colspan="9" style="color:var(--red)">Feil: ${e.message}</td></tr>`;
+  }
+}
+
+/* ── Hesteliste ───────────────────────────────────────────────────────────── */
+let _horsesDebTimer = null;
+
+function debounceHorses() {
+  clearTimeout(_horsesDebTimer);
+  _horsesDebTimer = setTimeout(() => loadHorses(1), 350);
+}
+
+async function loadHorses(page = 1) {
+  const q    = document.getElementById('horses-search').value.trim();
+  const bt   = document.getElementById('horses-bt').value;
+  const sort = document.getElementById('horses-sort').value;
+  const body = document.getElementById('horses-body');
+  body.innerHTML = '<tr><td colspan="9"><div class="loader"><div class="spinner"></div></div></td></tr>';
+  try {
+    const params = new URLSearchParams({ page, per_page: 50, sort });
+    if (q)  params.set('q', q);
+    if (bt) params.set('blood_type', bt);
+    const data = await api('/api/horses?' + params);
+    document.getElementById('horses-count').textContent = `${data.total} hester totalt`;
+    if (!data.horses.length) {
+      body.innerHTML = '<tr><td colspan="9" style="color:var(--muted);padding:20px">Ingen hester funnet.</td></tr>';
+      document.getElementById('horses-pagination').innerHTML = '';
+      return;
+    }
+    const offset = (page - 1) * 50;
+    body.innerHTML = data.horses.map((h, i) => `
+      <tr onclick="openHorseDetail('${h.horse_name.replace(/\\/g,'\\\\').replace(/'/g,"\\'")}') " style="cursor:pointer">
+        <td style="color:var(--muted);padding:10px 14px">${offset + i + 1}</td>
+        <td><strong>${h.horse_name}</strong></td>
+        <td>${btBadge(h.blood_type)}</td>
+        <td>${h.races}</td>
+        <td><span class="badge badge-1">${h.wins}</span></td>
+        <td>${h.win_pct ?? 0}%</td>
+        <td>${h.top3_pct ?? 0}%</td>
+        <td>${h.best_time ? fmtTime(h.best_time) : '–'}</td>
+        <td style="color:var(--muted)">${h.last_race ?? '–'}</td>
+      </tr>`).join('');
+    renderHorsesPagination(data.page, data.pages);
+  } catch(e) {
+    body.innerHTML = `<tr><td colspan="9" style="color:var(--red)">Feil: ${e.message}</td></tr>`;
+  }
+}
+
+function renderHorsesPagination(current, total) {
+  const el = document.getElementById('horses-pagination');
+  if (total <= 1) { el.innerHTML = ''; return; }
+  const pages = [];
+  for (let p = 1; p <= total; p++) {
+    if (p === 1 || p === total || Math.abs(p - current) <= 2) {
+      pages.push(p);
+    } else if (pages[pages.length - 1] !== '…') {
+      pages.push('…');
+    }
+  }
+  el.innerHTML = pages.map(p =>
+    p === '…'
+      ? `<span style="color:var(--muted);padding:0 4px">…</span>`
+      : `<button class="${p === current ? '' : 'secondary'}" onclick="loadHorses(${p})"
+           style="min-width:36px;padding:6px 10px">${p}</button>`
+  ).join('');
+}
+
+function openHorseDetail(name) {
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.querySelector('[data-page="horse"]').classList.add('active');
+  document.getElementById('page-horse').classList.add('active');
+  document.getElementById('horse-search').value = name;
+  lookupHorse();
+}
+
+/* ── Hesteanalyse ─────────────────────────────────────────────────────────── */
+setupAutocomplete('horse-search', 'ac-horse', v => {
+  document.getElementById('horse-search').value = v;
+  lookupHorse();
+});
+
+async function lookupHorse() {
+  const name = document.getElementById('horse-search').value.trim();
+  if (!name) return;
+  const el = document.getElementById('horse-result');
+  el.innerHTML = '<div class="loader"><div class="spinner"></div></div>';
+  try {
+    const s = await api('/api/horse/' + encodeURIComponent(name));
+    if (!s.horse) {
+      el.innerHTML = `<div class="card" style="color:var(--muted)">Ingen data funnet for <strong>${name}</strong>.</div>`;
+      return;
+    }
+    const btBadges = (s.blood_types || []).map(bt => btBadge(bt)).join(' ');
+    el.innerHTML = `
+      <div class="stat-grid">
+        <div class="stat-box">
+          <div style="margin-bottom:8px">${btBadges}</div>
+          <div class="stat-val">${s.races}</div><div class="stat-lbl">Totale løp</div>
+        </div>
+        <div class="stat-box"><div class="stat-val">${s.wins}</div><div class="stat-lbl">Seire</div></div>
+        <div class="stat-box"><div class="stat-val">${s.win_pct}%</div><div class="stat-lbl">Vinnerprosent</div></div>
+        <div class="stat-box"><div class="stat-val">${s.top3_pct}%</div><div class="stat-lbl">Topp-3%</div></div>
+        ${s.best_time ? `<div class="stat-box"><div class="stat-val">${fmtTime(s.best_time)}</div><div class="stat-lbl">Personlig rekord</div></div>` : ''}
+      </div>
+      <div class="card">
+        <div class="card-title">Siste 5 løp</div>
+        <table>
+          <thead><tr><th>Dato</th><th>Type</th><th>Bane</th><th>Distanse</th><th>Plassering</th></tr></thead>
+          <tbody>${(s.last_5 || []).map(r => {
+            const bc = r.pos===1?'badge-1':r.pos===2?'badge-2':r.pos===3?'badge-3':'badge-n';
+            return `<tr>
+              <td>${r.date}</td>
+              <td>${btBadge(r.blood_type)}</td>
+              <td>${r.track ?? '–'}</td>
+              <td>${r.dist ? r.dist+'m' : '–'}</td>
+              <td><span class="badge ${bc}">${r.pos ?? '–'}</span></td>
+            </tr>`;
+          }).join('')}</tbody>
+        </table>
+      </div>`;
+  } catch(e) {
+    el.innerHTML = `<div class="card" style="color:var(--red)">Feil: ${e.message}</div>`;
+  }
+}
+
+/* ── Startliste-parser ────────────────────────────────────────────────────── */
+
+// Kjente ikke-hestenavn som typisk dukker opp i lister
+const STOP_WORDS = new Set([
+  'start','nr','no','pos','pl','dist','tid','odds','jockey','trener','trainer',
+  'bane','track','løp','race','dato','date','km','m','v75','v65','v64','v5','dd',
+  'trio','tvilling','vinner','plass','gallop','trav','kaldblod','varmblod','galopp',
+  'scratched','utgått','strøket','reserve','res',
+]);
+
+// Norske/svenske bokstaver og bindestrek er gyldige i hestenavn
+const NAME_RE = /^[A-Za-zÆØÅæøåÄÖÜäöü][A-Za-zÆØÅæøåÄÖÜäöü\s'\-\.]{1,40}$/;
+
+function parseStartList(text) {
+  const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  const found   = [];
+  const jockeys = {};   // {horseName: jockeyName}
+  const seen    = new Set();
+
+  for (const line of lines) {
+    if (/^\d+$/.test(line)) continue;
+    if (/^[-=*#]+$/.test(line)) continue;
+
+    // Fjern ledende startnummer: "1.", "1)", "1 ", "(1)"
+    let cleaned = line.replace(/^\(?(\d{1,2})[.):\s]\s*/, '');
+
+    // Splitt på tab, to+ mellomrom eller pipe
+    const parts = cleaned.split(/\t{1,}|\s{2,}|\|/).map(p => p.trim()).filter(Boolean);
+    let candidate = parts[0] ?? '';
+
+    // Fjern odds-suffix som henger på: "Gausdal Brage4,0" → "Gausdal Brage"
+    candidate = candidate.replace(/\s*\d+[,\.]\d+$/, '').trim();
+
+    if (!NAME_RE.test(candidate)) continue;
+    if (STOP_WORDS.has(candidate.toLowerCase())) continue;
+    if (candidate.length < 2) continue;
+
+    const key = candidate.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    found.push(candidate);
+
+    // Prøv å hente jockeynavn fra parts[1] (f.eks. "Lars Hansen" eller "Vidar Hop")
+    if (parts.length >= 2) {
+      let possibleJockey = parts[1].replace(/\s*\d+[,\.]\d+$/, '').trim();
+      if (possibleJockey.length >= 3
+          && NAME_RE.test(possibleJockey)
+          && !STOP_WORDS.has(possibleJockey.toLowerCase())) {
+        jockeys[candidate] = possibleJockey;
+      }
+    }
+  }
+  return { horses: found, jockeys };
+}
+
+// Gjett bloddtype basert på hester som finnes i DB
+async function guessBloodType(horses) {
+  if (!horses.length) return null;
+  try {
+    // Sjekk første hest mot DB
+    const s = await api('/api/horse/' + encodeURIComponent(horses[0]));
+    if (s.blood_types && s.blood_types.length === 1) return s.blood_types[0];
+  } catch {}
+  return null;
+}
+
+// Globalt kart: hestenavn → jockeynavn (fra lim-inn-parsing)
+const parsedJockeys = {};
+
+async function parseAndPredict() {
+  const text    = document.getElementById('paste-area').value;
+  const forceBt = document.getElementById('paste-bt').value;
+  const preview = document.getElementById('parse-preview');
+
+  const { horses, jockeys } = parseStartList(text);
+  if (!horses.length) {
+    preview.innerHTML = '<div style="color:var(--red);font-size:.88rem">Fant ingen hestenavn. Sjekk formatet.</div>';
+    return;
+  }
+
+  // Lagre jockeyer globalt for bruk i runParsedPredict
+  Object.assign(parsedJockeys, jockeys);
+  const jockeyCount = Object.keys(jockeys).length;
+
+  // Vis tolkede navn med mulighet for å fjerne enkeltvis
+  preview.innerHTML = `
+    <div style="font-size:.82rem;color:var(--muted);margin-bottom:8px">
+      Tolket <strong style="color:var(--text)">${horses.length}</strong> hester
+      ${jockeyCount ? `· <strong style="color:var(--green)">${jockeyCount} kusk${jockeyCount>1?'er':''}</strong> gjenkjent` : '<span style="color:var(--gold)">· ingen kusker gjenkjent (bruker DB-data)</span>'}
+    </div>
+    <div id="parsed-tags" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px">
+      ${horses.map((h,i) => `
+        <span class="horse-tag" id="ptag-${i}" data-horse="${h}">
+          ${h}${jockeys[h] ? `<span style="font-size:.72rem;color:var(--muted);margin-left:4px">${jockeys[h]}</span>` : ''}
+          <button onclick="removeParsed(${i})">×</button>
+        </span>`).join('')}
+    </div>
+    <button onclick="runParsedPredict()">🎯 Forutsi vinner for denne listen</button>`;
+
+  // Synkroniser til predictHorses-settet også
+  predictHorses.clear();
+  horses.forEach(h => predictHorses.add(h));
+  renderTags();
+}
+
+function removeParsed(idx) {
+  const tag = document.getElementById(`ptag-${idx}`);
+  if (!tag) return;
+  const horse = tag.dataset.horse;
+  predictHorses.delete(horse);
+  tag.remove();
+}
+
+async function runParsedPredict() {
+  const tags = document.querySelectorAll('#parsed-tags [data-horse]');
+  const horses = [...tags].map(t => t.dataset.horse).filter(Boolean);
+  if (horses.length < 2) { toast('Minst 2 hester kreves', false); return; }
+
+  const forceBt = document.getElementById('paste-bt').value;
+  let bt = forceBt;
+  if (!bt) bt = await guessBloodType(horses);
+
+  // Bygg jockey-dict for hestene som er igjen i listen
+  const activeJockeys = {};
+  horses.forEach(h => { if (parsedJockeys[h]) activeJockeys[h] = parsedJockeys[h]; });
+
+  await runPredictWithHorses(horses, bt, activeJockeys);
+}
+
+/* ── Prediksjon (manuell + felles render) ─────────────────────────────────── */
+const predictHorses = new Set();
+
+setupAutocomplete('horse-input', 'ac-list', v => {
+  document.getElementById('horse-input').value = v;
+  addHorse();
+});
+
+function addHorse() {
+  const inp  = document.getElementById('horse-input');
+  const name = inp.value.trim();
+  if (!name || predictHorses.has(name)) { inp.value = ''; return; }
+  predictHorses.add(name);
+  inp.value = '';
+  renderTags();
+}
+function removeHorse(name) { predictHorses.delete(name); renderTags(); }
+function clearHorses() {
+  predictHorses.clear();
+  for (const k in parsedJockeys) delete parsedJockeys[k];
+  renderTags();
+  document.getElementById('predict-result').style.display = 'none';
+  document.getElementById('parse-preview').innerHTML = '';
+  document.getElementById('paste-area').value = '';
+}
+function renderTags() {
+  document.getElementById('horse-tags').innerHTML = [...predictHorses].map(h =>
+    `<span class="horse-tag">${h}<button onclick="removeHorse('${h.replace(/'/g,"\\'")}')">×</button></span>`
+  ).join('');
+  document.getElementById('btn-predict').style.display = predictHorses.size >= 2 ? 'inline-block' : 'none';
+}
+
+async function runPredict() {
+  await runPredictWithHorses([...predictHorses], null, {});
+}
+
+async function runPredictWithHorses(horses, bloodType, jockeys = {}) {
+  if (horses.length < 2) { toast('Legg til minst 2 hester', false); return; }
+  const card  = document.getElementById('predict-result');
+  const rows  = document.getElementById('predict-rows');
+  const title = document.getElementById('predict-title');
+  card.style.display = 'block';
+  card.scrollIntoView({ behavior: 'smooth' });
+  rows.innerHTML = '<div class="loader"><div class="spinner"></div></div>';
+
+  const btLabel = bloodType ? ` · ${BT_META[bloodType]?.label ?? bloodType}` : '';
+  title.textContent = `Rangering & sannsynligheter${btLabel}`;
+
+  try {
+    const result = await api('/api/predict', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ horses, blood_type: bloodType, jockeys })
+    });
+
+    if (!result.length) { rows.innerHTML = '<div style="color:var(--muted)">Ingen data for disse hestene.</div>'; return; }
+
+    const usedML = result[0]?.used_ml;
+    const mlBadge = usedML
+      ? `<span style="background:rgba(76,175,125,.15);color:var(--green);border-radius:12px;padding:2px 10px;font-size:.75rem;font-weight:700;margin-left:10px">🧠 ML-modell</span>`
+      : `<span style="background:rgba(136,145,181,.15);color:var(--muted);border-radius:12px;padding:2px 10px;font-size:.75rem;font-weight:700;margin-left:10px">📐 Regelbasert</span>`;
+    title.innerHTML = `Rangering &amp; sannsynligheter${btLabel}` + mlBadge;
+
+    // Fargekode prediksjonskortene etter bloddtype
+    const accentColor = bloodType === 'kaldblod' ? '#5fbfff'
+                      : bloodType === 'varmblod' ? '#ff9f50'
+                      : bloodType === 'galopp'   ? '#d96dd9'
+                      : 'var(--accent)';
+
+    rows.innerHTML = result.map((h, i) => {
+      const first    = i === 0;
+      const hasData  = h.data_points > 0;
+      const noDataWarn = !hasData
+        ? `<div style="color:var(--gold);font-size:.78rem;margin-top:6px">⚠️ Ingen historikk – bruker lik sannsynlighet</div>`
+        : '';
+      return `
+        <div style="margin-bottom:14px;padding:14px;background:var(--surface);border-radius:8px;
+             ${first ? `border:1px solid rgba(245,200,66,.35)` : `border:1px solid var(--border)`}">
+          <div style="display:flex;align-items:center;gap:12px">
+            <span class="rank-num" style="${first ? 'background:var(--gold);color:#000' : ''}">${i+1}</span>
+            <div style="flex:1">
+              <div style="font-weight:700;font-size:1rem">${h.horse} ${first ? '🥇' : ''}</div>
+              <div style="color:var(--muted);font-size:.8rem">
+                Score: ${h.score}
+                ${h.jockey
+                  ? `· <span title="${h.jockey_from_db ? 'Siste kusk fra database' : 'Kusk fra startliste'}"
+                            style="color:${h.jockey_from_db ? 'var(--muted)' : 'var(--text)'}">
+                      ${h.jockey_from_db ? '🗃' : '🎽'} ${h.jockey}
+                    </span>`
+                  : ''}
+                ${h.data_points ? `· ${h.data_points} løp i DB` : '· Ikke i DB'}
+              </div>
+            </div>
+            <div style="text-align:right;min-width:64px">
+              <div style="font-size:1.4rem;font-weight:700;color:${first ? 'var(--gold)' : accentColor}">${h.win_prob}%</div>
+              <div style="font-size:.72rem;color:var(--muted)">vinnersj.</div>
+            </div>
+          </div>
+          <div class="prob-bar" style="margin-top:10px">
+            <div class="prob-fill ${first ? 'rank-1' : ''}"
+                 style="width:${h.win_prob}%;${!first ? `background:${accentColor}` : ''}"></div>
+          </div>
+          <div style="display:flex;gap:14px;margin-top:8px;font-size:.78rem;color:var(--muted);flex-wrap:wrap">
+            <span title="35% vekt – personlig rekord / hest-kapasitet">
+              ⏱ PR: <strong style="color:var(--text)">${h.best_km_time ? fmtKmTime(h.best_km_time)+'/km' : '–'}</strong>
+              <span style="font-size:.7rem;opacity:.6">(35%)</span>
+            </span>
+            <span title="25% vekt – topp-3 siste 5 løp (form)">
+              📈 Form: <strong style="color:var(--text)">${h.form_top3}%</strong>
+              <span style="font-size:.7rem;opacity:.6">(25%)</span>
+            </span>
+            <span title="20% vekt – topp-3% karriere (konsistens)">
+              🎯 Konsistens: <strong style="color:var(--text)">${h.top3_career}%</strong>
+              <span style="font-size:.7rem;opacity:.6">(20%)</span>
+            </span>
+            <span title="10% vekt – vinnede løp totalt">
+              🏆 Vinn%: <strong style="color:var(--text)">${h.win_rate}%</strong>
+              <span style="font-size:.7rem;opacity:.6">(10%)</span>
+            </span>
+            <span title="10% vekt – jockey siste 40 løp">
+              🎽 Kusk: <strong style="color:var(--text)">${h.jockey_wr}%</strong>
+              <span style="font-size:.7rem;opacity:.6">(10%)</span>
+            </span>
+          </div>
+          ${noDataWarn}
+        </div>`;
+    }).join('');
+  } catch(e) { rows.innerHTML = `<div style="color:var(--red)">Feil: ${e.message}</div>`; }
+}
+
+/* ── Hent data – én dag ───────────────────────────────────────────────────── */
+document.getElementById('fetch-date').value = new Date().toISOString().slice(0, 10);
+
+async function fetchData() {
+  const date      = document.getElementById('fetch-date').value;
+  const sources   = [...document.querySelectorAll('.fetch-src-cb:checked')].map(c => c.value);
+  const countries = [...document.querySelectorAll('.fetch-country-cb:checked')].map(c => c.value);
+  if (!sources.length) { toast('Velg minst én kilde', false); return; }
+  if (sources.includes('rikstoto') && !countries.length) { toast('Velg minst ett land', false); return; }
+  const el = document.getElementById('fetch-status');
+  el.innerHTML = '<div class="spinner" style="width:18px;height:18px;border-width:2px;display:inline-block"></div> Henter data…';
+  try {
+    const params = new URLSearchParams({ date });
+    sources.forEach(s => params.append('sources', s));
+    countries.forEach(c => params.append('countries', c));
+    const r = await api('/api/fetch?' + params);
+    el.textContent = '✅ Ferdig: ' + Object.entries(r.summary)
+      .map(([k,v]) => typeof v==='number' ? `${k}: ${v} løp` : `${k}: feil`).join(' | ');
+    toast('Data hentet');
+  } catch(e) { el.textContent = '❌ Feil: ' + e.message; toast('Feil', false); }
+}
+
+/* ── Bulk-henting ─────────────────────────────────────────────────────────── */
+let _pollTimer = null;
+
+async function startBulk() {
+  const days      = parseInt(document.getElementById('bulk-days').value);
+  const delay     = parseFloat(document.getElementById('bulk-delay').value);
+  const sources   = [...document.querySelectorAll('.bulk-src-cb:checked')].map(c => c.value);
+  const countries = [...document.querySelectorAll('.bulk-country-cb:checked')].map(c => c.value);
+  if (!sources.length) { toast('Velg minst én kilde', false); return; }
+  if (sources.includes('rikstoto') && !countries.length) { toast('Velg minst ett land', false); return; }
+
+  try {
+    await api('/api/fetch/bulk', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ days, sources, countries, delay }),
+    });
+  } catch(e) {
+    toast(e.message, false);
+    return;
+  }
+
+  document.getElementById('bulk-start-btn').disabled = true;
+  document.getElementById('bulk-stop-btn').style.display  = 'inline-block';
+  document.getElementById('bulk-progress').style.display  = 'block';
+  document.getElementById('bulk-log').textContent = '';
+  toast(`Starter henting av ${days} dager…`);
+  _pollTimer = setInterval(pollBulk, 1500);
+}
+
+async function stopBulk() {
+  try { await api('/api/fetch/bulk/stop', { method: 'POST' }); } catch {}
+  toast('Stopp-signal sendt');
+}
+
+async function pollBulk() {
+  try {
+    const s = await api('/api/fetch/bulk/status');
+    const pct = s.total > 0 ? Math.round(s.done / s.total * 100) : 0;
+
+    document.getElementById('bulk-bar').style.width        = pct + '%';
+    document.getElementById('bulk-pct-label').textContent  = pct + '%';
+    document.getElementById('bulk-count-label').textContent = `${s.done} / ${s.total} racedays`;
+    document.getElementById('bulk-fetched').textContent    = s.fetched;
+    document.getElementById('bulk-done').textContent       = s.done;
+    document.getElementById('bulk-skipped').textContent    = s.skipped;
+    document.getElementById('bulk-errors').textContent     = s.errors;
+    document.getElementById('bulk-current').textContent    = s.current || '–';
+
+    // Logg-scroll
+    const logEl = document.getElementById('bulk-log');
+    const msgs  = (s.log || []).slice().reverse();
+    logEl.textContent = msgs.join('\n');
+
+    if (!s.running) {
+      clearInterval(_pollTimer);
+      _pollTimer = null;
+      document.getElementById('bulk-start-btn').disabled = false;
+      document.getElementById('bulk-stop-btn').style.display = 'none';
+      const finishedAt = s.finished_at ? new Date(s.finished_at).toLocaleTimeString('nb-NO') : '';
+      toast(`Ferdig! ${s.fetched} nye løp hentet (${finishedAt})`);
+      loadDashboard();
+    }
+  } catch(e) {
+    clearInterval(_pollTimer);
+    _pollTimer = null;
+    toast('Polling feilet: ' + e.message, false);
+  }
+}
+
+/* ── Demo-data ────────────────────────────────────────────────────────────── */
+async function loadDemo() {
+  const days = document.getElementById('demo-days').value;
+  const el   = document.getElementById('demo-status');
+  el.innerHTML = '<div class="spinner" style="width:16px;height:16px;border-width:2px;display:inline-block;vertical-align:middle"></div> Genererer demo-data…';
+  try {
+    const r = await api('/api/demo?days=' + days);
+    el.textContent = '✅ ' + r.message;
+    toast('Demo-data lastet');
+    loadDashboard();
+  } catch(e) { el.textContent = '❌ ' + e.message; toast('Feil', false); }
+}
+
+/* ── Autocomplete ─────────────────────────────────────────────────────────── */
+function setupAutocomplete(inputId, listId, onSelect) {
+  const input = document.getElementById(inputId);
+  const list  = document.getElementById(listId);
+  let timer;
+  input.addEventListener('input', () => {
+    clearTimeout(timer);
+    const q = input.value.trim();
+    if (q.length < 2) { list.style.display = 'none'; return; }
+    timer = setTimeout(async () => {
+      try {
+        const items = await api('/api/search/horses?q=' + encodeURIComponent(q));
+        if (!items.length) { list.style.display = 'none'; return; }
+        list.innerHTML = items.map(h => `<div class="ac-item">${h}</div>`).join('');
+        list.style.display = 'block';
+        list.querySelectorAll('.ac-item').forEach(el => {
+          el.addEventListener('click', () => { onSelect(el.textContent); list.style.display = 'none'; });
+        });
+      } catch {}
+    }, 300);
+  });
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { list.style.display = 'none'; onSelect(input.value.trim()); }
+  });
+  document.addEventListener('click', e => {
+    if (!input.contains(e.target) && !list.contains(e.target)) list.style.display = 'none';
+  });
+}
+
+/* ── Maskinlæring ─────────────────────────────────────────────────────────── */
+let _mlPollTimer = null;
+
+async function checkMLStatus() {
+  try {
+    const s = await api('/api/ml/status');
+    renderMLStatus(s);
+  } catch(e) {
+    document.getElementById('ml-status-area').innerHTML =
+      `<div style="color:var(--red);font-size:.85rem">Feil: ${e.message}</div>`;
+  }
+}
+
+function renderMLStatus(s) {
+  const area = document.getElementById('ml-status-area');
+  if (!area) return;
+  if (!s.is_trained) {
+    area.innerHTML = `
+      <div style="background:var(--surface);border-radius:8px;padding:12px;border:1px solid var(--border)">
+        <div style="color:var(--gold);font-weight:600;margin-bottom:4px">⚠️ Modell ikke trent ennå</div>
+        <div style="color:var(--muted);font-size:.83rem">
+          Last inn løpsdata (bulk-henting eller demo), trykk deretter «Tren modell nå».
+          Prediksjon bruker regelbasert scoring til modellen er klar.
+        </div>
+      </div>`;
+    return;
+  }
+  const meta = s.meta || {};
+  const auc  = meta.test_auc  ? `${(meta.test_auc * 100).toFixed(1)}%` : '–';
+  const date = meta.trained_at ? new Date(meta.trained_at).toLocaleString('nb-NO') : '–';
+  const imps = meta.importances || {};
+  const topF = Object.entries(imps).slice(0, 5)
+    .map(([k, v]) => `<span>${k}: <strong>${(v * 100).toFixed(1)}%</strong></span>`)
+    .join(' &nbsp;·&nbsp; ');
+  area.innerHTML = `
+    <div style="background:rgba(76,175,125,.08);border:1px solid rgba(76,175,125,.3);border-radius:8px;padding:14px">
+      <div style="color:var(--green);font-weight:700;margin-bottom:12px">✅ Modell trent og aktiv</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:10px;margin-bottom:12px">
+        <div style="background:var(--surface);border-radius:6px;padding:10px;text-align:center">
+          <div style="font-size:1.3rem;font-weight:700;color:var(--accent)">${meta.n_samples ?? '–'}</div>
+          <div style="font-size:.72rem;color:var(--muted)">Treningsstartere</div>
+        </div>
+        <div style="background:var(--surface);border-radius:6px;padding:10px;text-align:center">
+          <div style="font-size:1.3rem;font-weight:700;color:var(--green)">${meta.n_races ?? '–'}</div>
+          <div style="font-size:.72rem;color:var(--muted)">Løp (vinnere)</div>
+        </div>
+        <div style="background:var(--surface);border-radius:6px;padding:10px;text-align:center">
+          <div style="font-size:1.3rem;font-weight:700;color:var(--gold)">${auc}</div>
+          <div style="font-size:.72rem;color:var(--muted)">Test-AUC</div>
+        </div>
+        <div style="background:var(--surface);border-radius:6px;padding:10px;text-align:center">
+          <div style="font-size:.8rem;font-weight:600;color:var(--text)">${date}</div>
+          <div style="font-size:.72rem;color:var(--muted)">Trent</div>
+        </div>
+      </div>
+      <div style="font-size:.78rem;color:var(--muted)">
+        Feature-viktighet:&nbsp; ${topF}
+      </div>
+    </div>`;
+}
+
+async function trainML() {
+  try {
+    await api('/api/ml/train', { method: 'POST' });
+  } catch(e) {
+    toast(e.message, false);
+    return;
+  }
+  document.getElementById('ml-train-btn').disabled = true;
+  document.getElementById('ml-progress').style.display = 'block';
+  document.getElementById('ml-log').textContent = '';
+  toast('ML-trening startet…');
+  _mlPollTimer = setInterval(pollML, 1500);
+}
+
+async function pollML() {
+  try {
+    const s  = await api('/api/ml/status');
+    const el = document.getElementById('ml-log');
+    el.textContent = (s.log || []).join('\n');
+    el.scrollTop   = el.scrollHeight;
+
+    if (!s.running) {
+      clearInterval(_mlPollTimer);
+      _mlPollTimer = null;
+      document.getElementById('ml-train-btn').disabled    = false;
+      document.getElementById('ml-progress').style.display = 'none';
+      renderMLStatus(s);
+      if (s.error) {
+        toast('Trening feilet: ' + s.error, false);
+      } else {
+        const auc = s.meta?.test_auc ? (s.meta.test_auc * 100).toFixed(1) : '?';
+        toast(`Modell trent! Test-AUC: ${auc}%`);
+      }
+    }
+  } catch(e) {
+    clearInterval(_mlPollTimer);
+    _mlPollTimer = null;
+    toast('Polling feilet: ' + e.message, false);
+  }
+}
+
+/* ── Heste-profiler / Sammenslåing ───────────────────────────────────────── */
+setupAutocomplete('merge-alias',     'ac-merge-alias',     v => document.getElementById('merge-alias').value = v);
+setupAutocomplete('merge-canonical', 'ac-merge-canonical', v => document.getElementById('merge-canonical').value = v);
+
+async function loadMergePage() {
+  await Promise.all([loadDuplicates(), loadAliases()]);
+}
+
+async function loadDuplicates() {
+  const el = document.getElementById('dupes-body');
+  el.innerHTML = '<div class="loader"><div class="spinner"></div></div>';
+  try {
+    const dupes = await api('/api/horse/duplicates?limit=40');
+    if (!dupes.length) {
+      el.innerHTML = '<div style="color:var(--muted);padding:10px">Ingen mulige duplikater funnet.</div>';
+      return;
+    }
+    el.innerHTML = `
+      <table>
+        <thead><tr><th>Alias (foreslått)</th><th></th><th>Kanonisk (foreslått)</th><th>Felles løp</th><th></th></tr></thead>
+        <tbody>
+          ${dupes.map(d => `
+            <tr id="dupe-${d.name1.replace(/\W/g,'_')}_${d.name2.replace(/\W/g,'_')}">
+              <td><strong>${d.name1}</strong></td>
+              <td style="color:var(--muted)">→</td>
+              <td><strong>${d.name2}</strong></td>
+              <td><span class="badge badge-green">${d.shared_races}</span></td>
+              <td>
+                <button class="secondary" style="padding:4px 10px;font-size:.78rem"
+                  onclick="mergeSuggested('${d.name1}','${d.name2}',this)">🔗 Slå sammen</button>
+                <button class="secondary" style="padding:4px 10px;font-size:.78rem;margin-left:4px"
+                  onclick="swapAndMergeSuggested('${d.name1}','${d.name2}',this)">↔ Bytt retning</button>
+              </td>
+            </tr>`).join('')}
+        </tbody>
+      </table>`;
+  } catch(e) {
+    el.innerHTML = `<div style="color:var(--red)">Feil: ${e.message}</div>`;
+  }
+}
+
+async function loadAliases() {
+  const el = document.getElementById('aliases-body');
+  el.innerHTML = '<div class="loader"><div class="spinner"></div></div>';
+  try {
+    const aliases = await api('/api/horse/aliases');
+    if (!aliases.length) {
+      el.innerHTML = '<div style="color:var(--muted);padding:10px">Ingen sammenslåinger registrert ennå.</div>';
+      return;
+    }
+    el.innerHTML = `
+      <table>
+        <thead><tr><th>Alias</th><th></th><th>Kanonisk</th><th>Registrert</th><th></th></tr></thead>
+        <tbody>
+          ${aliases.map(a => `
+            <tr id="alias-row-${a.alias.replace(/\W/g,'_')}">
+              <td>${a.alias}</td>
+              <td style="color:var(--muted)">→</td>
+              <td><strong>${a.canonical}</strong></td>
+              <td style="color:var(--muted);font-size:.8rem">${a.created_at ? a.created_at.slice(0,16) : ''}</td>
+              <td>
+                <button class="danger" style="padding:4px 10px;font-size:.78rem"
+                  onclick="deleteAlias('${a.alias}',this)">🗑 Fjern</button>
+              </td>
+            </tr>`).join('')}
+        </tbody>
+      </table>`;
+  } catch(e) {
+    el.innerHTML = `<div style="color:var(--red)">Feil: ${e.message}</div>`;
+  }
+}
+
+async function doMerge() {
+  const alias     = document.getElementById('merge-alias').value.trim();
+  const canonical = document.getElementById('merge-canonical').value.trim();
+  const status    = document.getElementById('merge-status');
+  if (!alias || !canonical) { status.innerHTML = '<span style="color:var(--gold)">Fyll inn begge feltene.</span>'; return; }
+  try {
+    const r = await api('/api/horse/merge', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ alias, canonical })
+    });
+    if (r.error) { status.innerHTML = `<span style="color:var(--red)">❌ ${r.error}</span>`; return; }
+    status.innerHTML = `<span style="color:var(--green)">✅ ${r.message}</span>`;
+    document.getElementById('merge-alias').value     = '';
+    document.getElementById('merge-canonical').value = '';
+    toast('Hester slått sammen');
+    await loadAliases();
+  } catch(e) {
+    status.innerHTML = `<span style="color:var(--red)">❌ ${e.message}</span>`;
+  }
+}
+
+async function mergeSuggested(alias, canonical, btn) {
+  btn.disabled = true;
+  btn.textContent = '…';
+  try {
+    const r = await api('/api/horse/merge', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ alias, canonical })
+    });
+    if (r.error) { toast(r.error, false); btn.disabled = false; btn.textContent = '🔗 Slå sammen'; return; }
+    toast(`Slått sammen: ${alias} → ${canonical}`);
+    // Fjern raden og refresh aliases
+    btn.closest('tr').style.opacity = '0.4';
+    await loadAliases();
+  } catch(e) { toast(e.message, false); btn.disabled = false; btn.textContent = '🔗 Slå sammen'; }
+}
+
+async function swapAndMergeSuggested(name1, name2, btn) {
+  // Bytt: name2 (alias) → name1 (canonical)
+  btn.disabled = true;
+  btn.textContent = '…';
+  try {
+    const r = await api('/api/horse/merge', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ alias: name2, canonical: name1 })
+    });
+    if (r.error) { toast(r.error, false); btn.disabled = false; btn.textContent = '↔ Bytt retning'; return; }
+    toast(`Slått sammen: ${name2} → ${name1}`);
+    btn.closest('tr').style.opacity = '0.4';
+    await loadAliases();
+  } catch(e) { toast(e.message, false); btn.disabled = false; btn.textContent = '↔ Bytt retning'; }
+}
+
+async function deleteAlias(alias, btn) {
+  if (!confirm(`Fjerne sammenslåing for '${alias}'?`)) return;
+  btn.disabled = true;
+  try {
+    await api('/api/horse/alias/' + encodeURIComponent(alias), { method: 'DELETE' });
+    toast(`Alias '${alias}' fjernet`);
+    await loadAliases();
+  } catch(e) { toast(e.message, false); btn.disabled = false; }
+}
+
+/* ── Kilde-toggle: skjul land-valg når rikstoto er av ────────────────────── */
+function updateCountryVisibility(srcClass, wrapId) {
+  const hasRikstoto = [...document.querySelectorAll('.' + srcClass + ':checked')]
+                        .some(cb => cb.value === 'rikstoto');
+  const wrap = document.getElementById(wrapId);
+  if (wrap) wrap.style.opacity = hasRikstoto ? '1' : '0.35';
+}
+document.querySelectorAll('.fetch-src-cb').forEach(cb =>
+  cb.addEventListener('change', () => updateCountryVisibility('fetch-src-cb', 'fetch-countries-wrap'))
+);
+document.querySelectorAll('.bulk-src-cb').forEach(cb =>
+  cb.addEventListener('change', () => updateCountryVisibility('bulk-src-cb', 'bulk-countries-wrap'))
+);
+
+/* ── Init ─────────────────────────────────────────────────────────────────── */
+loadDashboard();
+</script>
+</body>
+</html>
